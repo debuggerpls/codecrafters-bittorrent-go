@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"unicode"
 	// bencode "github.com/jackpal/bencode-go" // Available if you need it!
 )
@@ -16,7 +17,9 @@ var _ = json.Marshal
 // - 5:hello -> hello
 // - 10:hello12345 -> hello12345
 func decodeBencode(bencodedString string) (interface{}, error) {
-	if unicode.IsDigit(rune(bencodedString[0])) {
+	firstRune := rune(bencodedString[0])
+	switch {
+	case unicode.IsDigit(firstRune):
 		var firstColonIndex int
 
 		for i := 0; i < len(bencodedString); i++ {
@@ -34,15 +37,19 @@ func decodeBencode(bencodedString string) (interface{}, error) {
 		}
 
 		return bencodedString[firstColonIndex+1 : firstColonIndex+1+length], nil
-	} else {
+	case firstRune == 'i':
+		indexEnd := strings.Index(bencodedString, "e")
+		integer, err := strconv.Atoi(bencodedString[1:indexEnd])
+		if err != nil {
+			return "", err
+		}
+		return integer, nil
+	default:
 		return "", fmt.Errorf("Only strings are supported at the moment")
 	}
 }
 
 func main() {
-	// You can use print statements as follows for debugging, they'll be visible when running tests.
-	//fmt.Println("Logs from your program will appear here!")
-
 	command := os.Args[1]
 
 	if command == "decode" {
