@@ -221,22 +221,130 @@ func decodeBencode(bencodedString string) (interface{}, error) {
 	}
 }
 
+type TorrentFile struct {
+	FilePath string
+	Announce string
+	Info     TorrentFileInfo
+}
+
+type TorrentFileInfo struct {
+	Length      int
+	Name        string
+	PieceLength int
+	Pieces      string
+}
+
+func getInfoValue[T comparable](info map[string]interface{}, key string, valueType T) (T, error) {
+	value, ok := info[key]
+	if !ok {
+		return valueType, fmt.Errorf("TorrentFile.info.%s: no \"%s\" field in torrent file", key, key)
+	}
+	val, ok := value.(T)
+	if !ok {
+		return valueType, fmt.Errorf("TorrentFile.info.%s: invalid \"%s\" field in torrent file", key, key)
+	}
+	return val, nil
+}
+
+func NewTorrentFile(filePath string) (*TorrentFile, error) {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	stat, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	stat.Size()
+	torrent := &TorrentFile{FilePath: filePath}
+
+	buf := make([]byte, stat.Size())
+	size, err := f.Read(buf)
+	if err != nil {
+		return nil, err
+	}
+	if len(buf) != size {
+		return nil, fmt.Errorf("did not read full torrent file, file size: %d, read: %d", size, len(buf))
+	}
+
+	d, _, err := decodeBencodeDict(string(buf))
+	if err != nil {
+		return nil, err
+	}
+
+	value, ok := d["announce"]
+	if !ok {
+		return nil, fmt.Errorf("\"announce\" not found in torrent file")
+	}
+	announce, ok := value.(string)
+	if !ok {
+		return nil, fmt.Errorf("\"announce\" in torrent file is not BencodeString")
+	}
+	torrent.Announce = announce
+
+	value, ok = d["info"]
+	if !ok {
+		return nil, fmt.Errorf("\"info\" not found in torrent file")
+	}
+	info, ok := value.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("\"info\" in torrent file is not BencodeDict")
+	}
+
+	torrent.Info.Length, err = getInfoValue(info, "length", torrent.Info.Length)
+	if err != nil {
+		return nil, err
+	}
+
+	torrent.Info.Name, err = getInfoValue(info, "name", torrent.Info.Name)
+	if err != nil {
+		return nil, err
+	}
+
+	torrent.Info.PieceLength, err = getInfoValue(info, "piece length", torrent.Info.PieceLength)
+	if err != nil {
+		return nil, err
+	}
+
+	torrent.Info.Pieces, err = getInfoValue(info, "pieces", torrent.Info.Pieces)
+	if err != nil {
+		return nil, err
+	}
+
+	return torrent, nil
+}
+
 func main() {
 	command := os.Args[1]
 
-	if command == "decode" {
+	switch command {
+	case "decode":
 		bencodedValue := os.Args[2]
 
 		decoded, err := decodeBencode(bencodedValue)
 		if err != nil {
 			fmt.Println(err)
-			return
 		}
 
 		jsonOutput, _ := json.Marshal(decoded)
 		fmt.Println(string(jsonOutput))
-	} else {
+		return
+	case "info":
+		filePath := os.Args[2]
+
+		torrent, err := NewTorrentFile(filePath)
+		if err != nil {
+			fmt.Println(err)
+		}
+
+		fmt.Printf("Tracker URL: %s\n", torrent.Announce)
+		fmt.Printf("Length: %d\n", torrent.Info.Length)
+		return
+	default:
 		fmt.Println("Unknown command: " + command)
-		os.Exit(1)
 	}
+
+	os.Exit(1)
 }
