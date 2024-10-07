@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"crypto/sha1"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,6 +14,14 @@ import (
 
 // Ensures gofmt doesn't remove the "os" encoding/json import (feel free to remove this!)
 var _ = json.Marshal
+
+func encodeInteger(i int) string {
+	return fmt.Sprintf("i%se", strconv.Itoa(i))
+}
+
+func encodeString(s string) string {
+	return fmt.Sprintf("%d:%s", len(s), s)
+}
 
 // Example:
 // - 5:hello -> hello
@@ -246,6 +256,21 @@ func getInfoValue[T comparable](info map[string]interface{}, key string, valueTy
 	return val, nil
 }
 
+func (torrent *TorrentFile) InfoHash() (string, error) {
+	// because we know that torrent file is valid, we can just use the file itself
+	data, err := os.ReadFile(torrent.FilePath)
+	if err != nil {
+		return "", err
+	}
+
+	// 4:infod<INFO_CONTENTS>e
+	infoStart := bytes.Index(data, []byte("4:info")) + 6
+	if infoStart < 0 {
+		return "", fmt.Errorf("TorrentFile.info: no info in torrent file")
+	}
+	return fmt.Sprintf("%x", sha1.Sum(data[infoStart:len(data)-1])), nil
+}
+
 func NewTorrentFile(filePath string) (*TorrentFile, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
@@ -341,6 +366,12 @@ func main() {
 
 		fmt.Printf("Tracker URL: %s\n", torrent.Announce)
 		fmt.Printf("Length: %d\n", torrent.Info.Length)
+		infoHash, err := torrent.InfoHash()
+		if err != nil {
+			fmt.Println(err)
+		} else {
+			fmt.Printf("Info Hash: %s\n", infoHash)
+		}
 		return
 	default:
 		fmt.Println("Unknown command: " + command)
