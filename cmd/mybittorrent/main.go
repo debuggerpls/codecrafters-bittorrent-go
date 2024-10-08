@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha1"
 	"encoding/binary"
@@ -346,71 +347,6 @@ func NewTorrentFile(filePath string) (*TorrentFile, error) {
 	return torrent, nil
 }
 
-func main() {
-	command := os.Args[1]
-
-	switch command {
-	case "decode":
-		bencodedValue := os.Args[2]
-
-		decoded, err := decodeBencode(bencodedValue)
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
-
-		jsonOutput, _ := json.Marshal(decoded)
-		fmt.Println(string(jsonOutput))
-	case "info":
-		filePath := os.Args[2]
-
-		torrent, err := NewTorrentFile(filePath)
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
-
-		fmt.Printf("Tracker URL: %s\n", torrent.Announce)
-		fmt.Printf("Length: %d\n", torrent.Info.Length)
-		infoHash, err := torrent.InfoHash()
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		} else {
-			fmt.Printf("Info Hash: %x\n", infoHash)
-		}
-		fmt.Printf("Piece Length: %d\n", torrent.Info.PieceLength)
-		fmt.Printf("Piece Hashes:\n")
-		for i := 0; i < len(torrent.Info.Pieces); i += 20 {
-			fmt.Printf("%x\n", torrent.Info.Pieces[i:i+20])
-		}
-		return
-	case "peers":
-		filePath := os.Args[2]
-
-		torrent, err := NewTorrentFile(filePath)
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
-
-		progress := &TorrentProgress{PeerID: "00112233445566778899", Port: 1234, Compact: 1}
-
-		response, err := torrent.GetTrackerResponse(progress)
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
-
-		for i := 0; i < len(response.Peers); i++ {
-			fmt.Println(response.Peers[i])
-		}
-
-	default:
-		fmt.Println("Unknown command: " + command)
-	}
-}
-
 type TorrentProgress struct {
 	PeerID     string
 	Port       int
@@ -492,4 +428,132 @@ type TrackerPeer struct {
 
 func (peer TrackerPeer) String() string {
 	return fmt.Sprintf("%s:%d", peer.Ip, peer.Port)
+}
+
+type HandshakeMessage struct {
+	Length   byte
+	Protocol [19]byte
+	Reserved [8]byte
+	InfoHash [20]byte
+	PeerId   [20]byte
+}
+
+func NewHanshakeMessage(peerId [20]byte, infoHash [20]byte) *HandshakeMessage {
+	msg := &HandshakeMessage{
+		Length:   19,
+		InfoHash: infoHash,
+		PeerId:   peerId,
+	}
+	copy(msg.Protocol[:], "BitTorrent protocol")
+	return msg
+}
+
+func main() {
+	command := os.Args[1]
+
+	switch command {
+	case "decode":
+		bencodedValue := os.Args[2]
+
+		decoded, err := decodeBencode(bencodedValue)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+
+		jsonOutput, _ := json.Marshal(decoded)
+		fmt.Println(string(jsonOutput))
+	case "info":
+		filePath := os.Args[2]
+
+		torrent, err := NewTorrentFile(filePath)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("Tracker URL: %s\n", torrent.Announce)
+		fmt.Printf("Length: %d\n", torrent.Info.Length)
+		infoHash, err := torrent.InfoHash()
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		} else {
+			fmt.Printf("Info Hash: %x\n", infoHash)
+		}
+		fmt.Printf("Piece Length: %d\n", torrent.Info.PieceLength)
+		fmt.Printf("Piece Hashes:\n")
+		for i := 0; i < len(torrent.Info.Pieces); i += 20 {
+			fmt.Printf("%x\n", torrent.Info.Pieces[i:i+20])
+		}
+		return
+	case "peers":
+		filePath := os.Args[2]
+
+		torrent, err := NewTorrentFile(filePath)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+
+		progress := &TorrentProgress{PeerID: "00112233445566778899", Port: 1234, Compact: 1}
+
+		response, err := torrent.GetTrackerResponse(progress)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+
+		for i := 0; i < len(response.Peers); i++ {
+			fmt.Println(response.Peers[i])
+		}
+	case "handshake":
+		filePath := os.Args[2]
+		peerInfo := os.Args[3]
+
+		torrent, err := NewTorrentFile(filePath)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+
+		progress := &TorrentProgress{PeerID: "00112233445566778899", Port: 1234, Compact: 1}
+		peerId := []byte(progress.PeerID)
+		infoHash, err := torrent.InfoHash()
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		msg := NewHanshakeMessage([20]byte(peerId), infoHash)
+		var buf bytes.Buffer
+		err = binary.Write(&buf, binary.BigEndian, msg)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+
+		conn, err := net.Dial("tcp", peerInfo)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		defer conn.Close()
+
+		writer := bufio.NewWriter(conn)
+		writer.Write(buf.Bytes())
+		writer.Flush()
+
+		reader := bufio.NewReader(conn)
+		var handshakeResponse HandshakeMessage
+		err = binary.Read(reader, binary.BigEndian, &handshakeResponse)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("Peer ID: %x\n", handshakeResponse.PeerId)
+
+	default:
+		fmt.Println("Unknown command: " + command)
+	}
 }
