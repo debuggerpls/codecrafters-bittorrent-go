@@ -3,8 +3,13 @@ package main
 import (
 	"bytes"
 	"crypto/sha1"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -15,11 +20,11 @@ import (
 // Ensures gofmt doesn't remove the "os" encoding/json import (feel free to remove this!)
 var _ = json.Marshal
 
-func encodeInteger(i int) string {
+func bencodeInteger(i int) string {
 	return fmt.Sprintf("i%se", strconv.Itoa(i))
 }
 
-func encodeString(s string) string {
+func bencodeString(s string) string {
 	return fmt.Sprintf("%d:%s", len(s), s)
 }
 
@@ -256,19 +261,19 @@ func getInfoValue[T comparable](info map[string]interface{}, key string, valueTy
 	return val, nil
 }
 
-func (torrent *TorrentFile) InfoHash() (string, error) {
+func (torrent *TorrentFile) InfoHash() ([20]byte, error) {
 	// because we know that torrent file is valid, we can just use the file itself
 	data, err := os.ReadFile(torrent.FilePath)
 	if err != nil {
-		return "", err
+		return [20]byte{}, err
 	}
 
 	// 4:infod<INFO_CONTENTS>e
 	infoStart := bytes.Index(data, []byte("4:info")) + 6
 	if infoStart < 0 {
-		return "", fmt.Errorf("TorrentFile.info: no info in torrent file")
+		return [20]byte{}, fmt.Errorf("TorrentFile.info: no info in torrent file")
 	}
-	return fmt.Sprintf("%x", sha1.Sum(data[infoStart:len(data)-1])), nil
+	return sha1.Sum(data[infoStart : len(data)-1]), nil
 }
 
 func NewTorrentFile(filePath string) (*TorrentFile, error) {
@@ -351,17 +356,18 @@ func main() {
 		decoded, err := decodeBencode(bencodedValue)
 		if err != nil {
 			fmt.Println(err)
+			os.Exit(1)
 		}
 
 		jsonOutput, _ := json.Marshal(decoded)
 		fmt.Println(string(jsonOutput))
-		return
 	case "info":
 		filePath := os.Args[2]
 
 		torrent, err := NewTorrentFile(filePath)
 		if err != nil {
 			fmt.Println(err)
+			os.Exit(1)
 		}
 
 		fmt.Printf("Tracker URL: %s\n", torrent.Announce)
@@ -369,8 +375,9 @@ func main() {
 		infoHash, err := torrent.InfoHash()
 		if err != nil {
 			fmt.Println(err)
+			os.Exit(1)
 		} else {
-			fmt.Printf("Info Hash: %s\n", infoHash)
+			fmt.Printf("Info Hash: %x\n", infoHash)
 		}
 		fmt.Printf("Piece Length: %d\n", torrent.Info.PieceLength)
 		fmt.Printf("Piece Hashes:\n")
@@ -378,9 +385,111 @@ func main() {
 			fmt.Printf("%x\n", torrent.Info.Pieces[i:i+20])
 		}
 		return
+	case "peers":
+		filePath := os.Args[2]
+
+		torrent, err := NewTorrentFile(filePath)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+
+		progress := &TorrentProgress{PeerID: "00112233445566778899", Port: 1234, Compact: 1}
+
+		response, err := torrent.GetTrackerResponse(progress)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+
+		for i := 0; i < len(response.Peers); i++ {
+			fmt.Println(response.Peers[i])
+		}
+
 	default:
 		fmt.Println("Unknown command: " + command)
 	}
+}
 
-	os.Exit(1)
+type TorrentProgress struct {
+	PeerID     string
+	Port       int
+	Uploaded   int
+	Downloaded int
+	Left       int
+	Compact    int
+}
+
+func (torrent *TorrentFile) newTrackerRequestURL(progress *TorrentProgress) (string, error) {
+	infoHash, err := torrent.InfoHash()
+	if err != nil {
+		return "", err
+	}
+
+	trackerParams := url.Values{}
+	trackerParams.Set("info_hash", string(infoHash[:]))
+	trackerParams.Set("peer_id", progress.PeerID)
+	trackerParams.Set("port", strconv.Itoa(progress.Port))
+	trackerParams.Set("uploaded", strconv.Itoa(progress.Uploaded))
+	trackerParams.Set("downloaded", strconv.Itoa(progress.Downloaded))
+	// TODO: this should be calculated in the future
+	trackerParams.Set("left", strconv.Itoa(torrent.Info.Length))
+	trackerParams.Set("compact", strconv.Itoa(progress.Compact))
+
+	trackerRequestURL := fmt.Sprintf("%s?%s", torrent.Announce, trackerParams.Encode())
+	return trackerRequestURL, nil
+}
+
+func (torrent *TorrentFile) GetTrackerResponse(progress *TorrentProgress) (*TrackerResponse, error) {
+	trackerRequestURL, err := torrent.newTrackerRequestURL(progress)
+	if err != nil {
+		return nil, err
+	}
+	//fmt.Println(trackerRequestURL)
+	resp, err := http.Get(trackerRequestURL)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	trackerResponse, _, err := decodeBencodeDict(string(body))
+	if err != nil {
+		return nil, err
+	}
+
+	response := &TrackerResponse{Peers: make([]TrackerPeer, 0)}
+	peers, err := getInfoValue(trackerResponse, "peers", "")
+	if err != nil {
+		return nil, err
+	}
+
+	for i := 0; i < len(peers); i += 6 {
+		response.Peers = append(response.Peers, TrackerPeer{Ip: net.IPv4(peers[i], peers[i+1], peers[i+2], peers[i+3]), Port: int(binary.BigEndian.Uint16([]byte(peers[i+4:])))})
+	}
+
+	response.Interval, err = getInfoValue(trackerResponse, "interval", response.Interval)
+	if err != nil {
+		return nil, err
+	}
+
+	return response, nil
+}
+
+type TrackerResponse struct {
+	Interval int
+	Peers    []TrackerPeer
+}
+
+type TrackerPeer struct {
+	Ip   net.IP
+	Port int
+}
+
+func (peer TrackerPeer) String() string {
+	return fmt.Sprintf("%s:%d", peer.Ip, peer.Port)
 }
