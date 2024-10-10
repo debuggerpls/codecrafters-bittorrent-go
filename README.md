@@ -1,35 +1,83 @@
 [![progress-banner](https://backend.codecrafters.io/progress/bittorrent/b0ab8177-5cc9-4522-b3d0-64c388050dde)](https://app.codecrafters.io/users/codecrafters-bot?r=2qF)
 
-This is a starting point for Go solutions to the
+This is a Go solution to the
 ["Build Your Own BitTorrent" Challenge](https://app.codecrafters.io/courses/bittorrent/overview).
 
-In this challenge, you’ll build a BitTorrent client that's capable of parsing a
-.torrent file and downloading a file from a peer. Along the way, we’ll learn
-about how torrent files are structured, HTTP trackers, BitTorrent’s Peer
-Protocol, pipelining and more.
+## BitTorrent Protocol Specification
+* https://www.bittorrent.org/beps/bep_0003.html
+* https://wiki.theory.org/BitTorrentSpecification
 
-**Note**: If you're viewing this repo on GitHub, head over to
-[codecrafters.io](https://codecrafters.io) to try the challenge.
+## Tasks
 
-# Passing the first stage
-
-The entry point for your BitTorrent implementation is in
-`cmd/mybittorrent/main.go`. Study and uncomment the relevant code, and push your
-changes to pass the first stage:
-
-```sh
-git commit -am "pass 1st stage" # any msg
-git push origin master
+### 1. Decode bencoded strings
+```
+$ ./your_bittorrent.sh decode 5:hello
+"hello"
 ```
 
-Time to move on to the next stage!
+### 2. Decode bencoded integers
+```
+$ ./your_bittorrent.sh decode i52e
+52
+```
 
-# Stage 2 & beyond
+### 3. Decode bencoded lists
+```
+$ ./your_bittorrent.sh decode l5:helloi52ee
+[“hello”,52]
+```
 
-Note: This section is for stages 2 and beyond.
+### 4. Decode bencoded dictionaries
+```
+$ ./your_bittorrent.sh decode l5:helloi52ee
+[“hello”,52]
+```
 
-1. Ensure you have `go (1.19)` installed locally
-1. Run `./your_bittorrent.sh` to run your program, which is implemented in
-   `cmd/mybittorrent/main.go`.
-1. Commit your changes and run `git push origin master` to submit your solution
-   to CodeCrafters. Test output will be streamed to your terminal.
+### 5. Parse torrent file
+```
+$ ./your_bittorrent.sh info sample.torrent
+Tracker URL: http://bittorrent-test-tracker.codecrafters.io/announce
+Length: 92063
+```
+
+### 6. Calculate info hash
+```
+$ ./your_bittorrent.sh info sample.torrent
+Tracker URL: http://bittorrent-test-tracker.codecrafters.io/announce
+Length: 92063
+Info Hash: d69f91e6b2ae4c542468d1073a71d4ea13879a7f
+```
+
+### 7. Piece hashes
+```
+$ ./your_bittorrent.sh info sample.torrent
+Tracker URL: http://bittorrent-test-tracker.codecrafters.io/announce
+Length: 92063
+Info Hash: d69f91e6b2ae4c542468d1073a71d4ea13879a7f
+Piece Length: 32768
+Piece Hashes:
+e876f67a2a8886e8f36b136726c30fa29703022d
+6e2275e604a0766656736e81ff10b55204ad8d35
+f00d937a0213df1982bc8d097227ad9e909acc17
+```
+
+### 8. Discover peers
+```
+$ ./your_bittorrent.sh peers sample.torrent
+165.232.35.114:51533
+165.232.38.164:51596
+165.232.41.73:51451
+```
+
+### 9. Peer handshake
+```
+$ ./your_bittorrent.sh handshake sample.torrent 165.232.35.114:51533
+Peer ID: 2d524e302e302e302dd5c125b7413647829520d9
+```
+
+### 9. Download a piece
+```
+$ ./your_bittorrent.sh download_piece -o ./test-piece-0 sample.torrent 0
+$ ls test-piece-0
+test-piece-0
+```
