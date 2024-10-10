@@ -551,9 +551,263 @@ func main() {
 			os.Exit(1)
 		}
 
+	case "download":
+		// ./your_bittorrent.sh download -o /tmp/test.txt sample.torrent
+		outputPath := os.Args[3]
+		filePath := os.Args[4]
+
+		torrent, err := NewTorrentFile(filePath, 1234)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+
+		trackerResponse, err := torrent.GetTrackerResponse()
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+
+		// FIXME: check if this actually sets the capacity to hold whole piece
+		pieceBuffer := bytes.NewBuffer(make([]byte, 0, torrent.Info.PieceLength))
+
+		// make sure that it has enough space in case different messages are received
+		msg := PeerWireMessage{
+			buffer: make([]byte, LenRequestBlockLength*2),
+		}
+
+		// Connection to a peer
+		peerIndex := 0
+		conn, err := net.Dial("tcp", trackerResponse.Peers[peerIndex].String())
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		defer conn.Close()
+
+		rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
+
+		// Download pieces
+		piecesTotal := torrent.Info.Length / torrent.Info.PieceLength
+		if torrent.Info.Length%torrent.Info.PieceLength != 0 {
+			piecesTotal += 1
+		}
+		for i := 0; i < piecesTotal; i++ {
+			pieceBuffer.Reset()
+			if err = downloadPiece(torrent, rw, &msg, pieceBuffer, i, outputPath+strconv.Itoa(i)); err != nil {
+				fmt.Printf("Failed to download pieceIndex=%d: %s\n", i, err)
+				os.Exit(1)
+			}
+		}
+
+		outputFile, err := os.Create(outputPath)
+		if err != nil {
+			fmt.Printf("Failed to create output file: %s\n", err)
+			os.Exit(1)
+		}
+		defer outputFile.Close()
+		outputWriter := bufio.NewWriter(outputFile)
+
+		for i := 0; i < piecesTotal; i++ {
+			inputPath := outputPath + strconv.Itoa(i)
+			inputPiece, err := os.Open(inputPath)
+			if err != nil {
+				fmt.Printf("Failed to open piece file %s: %s\n", inputPath, err)
+				os.Exit(1)
+			}
+			defer inputPiece.Close()
+
+			inputReader := bufio.NewReader(inputPiece)
+
+			_, err = outputWriter.ReadFrom(inputReader)
+			if err != nil {
+				fmt.Printf("Failed to read from %s to %s: %s\n", inputPath, outputPath)
+				os.Exit(1)
+			}
+
+			// FIXME: is it ok to delete the piece? What if consequent piece fails?
+			if err = os.Remove(inputPath); err != nil {
+				fmt.Printf("Failed to remove %s: %s\n", inputPath, err)
+				os.Exit(1)
+			}
+		}
+		if err = outputWriter.Flush(); err != nil {
+			fmt.Printf("Failed to flush to output file %s: %s\n", outputPath, err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("Downloaded file: %s\n", outputPath)
+
 	default:
 		fmt.Println("Unknown command: " + command)
 	}
+}
+
+func downloadPiece(torrent *TorrentFile, rw *bufio.ReadWriter, msg *PeerWireMessage, pieceBuffer *bytes.Buffer, pieceIndex int, outputPath string) error {
+	var err error
+
+	// FIXME: on errors or retries, this might not be the case!
+	if pieceIndex == 0 {
+		// Handshake
+		if err = torrent.FillHandshakeMessage(msg); err != nil {
+			return err
+		}
+
+		if err = HandlePeerWireProtocol(rw, msg); err != nil {
+			return fmt.Errorf("failed handshake: %s\n", err)
+		}
+
+		// no more handshake messages from here on
+		msg.handshake = false
+
+		fmt.Printf("Peer ID: %x\n", msg.buffer[OffsetHandshakePeerId:LenHandshakeMsg])
+
+		// Step 1: wait for bitfield message from the peer
+		// The bitfield message may only be sent immediately after the handshaking sequence is completed,
+		// and BEFORE any other messages are sent.
+		// It is optional, and need not be sent if a client has no pieces.
+		receivedBitfield := false
+		if msg.len > LenHandshakeMsg {
+			for offset := LenHandshakeMsg; offset < msg.len; {
+				lenPrefix := msg.toInt(offset)
+				fmt.Printf("LengthPrefix=%d\n", lenPrefix)
+				switch {
+				case lenPrefix == 0:
+				//	fmt.Println("received \"keep-alive\" peer message after handshake")
+				default:
+					//fmt.Printf("received \"%s\" peer message after handshake\n", msg.toMsgId(offset+4))
+					// TODO: implement bitfield checks
+					receivedBitfield = true
+				}
+
+				offset += 4 + lenPrefix
+			}
+		}
+
+		for !receivedBitfield {
+			// just send a keep-alive until we receive bitfield
+			clear(msg.buffer[0:4])
+			msg.len = 4
+			if err = HandlePeerWireProtocol(rw, msg); err != nil {
+				return fmt.Errorf("failed receiving \"bitfield\" peer message: %s\n", err)
+			}
+
+			for offset := 0; offset < msg.len; {
+				lenPrefix := msg.toInt(offset)
+
+				switch {
+				case lenPrefix == 0:
+					//fmt.Println("received \"keep-alive\" peer message")
+				default:
+					//fmt.Printf("received \"%s\" peer message\n", msg.toMsgId(offset+4))
+					// TODO: implement bitfield checks
+					receivedBitfield = true
+				}
+
+				offset += 4 + lenPrefix
+			}
+		}
+
+		// Step 2: send an interested message
+		// Step 3: wait for unchoke message
+		for receivedUnchoke := false; !receivedUnchoke; {
+			copy(msg.buffer, []byte{0, 0, 0, 1, byte(Interested)})
+			msg.len = 5
+			if err = HandlePeerWireProtocol(rw, msg); err != nil {
+				return fmt.Errorf("failed receiving \"unchoke\" peer message: %s\n", err)
+			}
+			for offset := 0; offset < msg.len; {
+				lenPrefix := msg.toInt(offset)
+				switch {
+				case lenPrefix == 0:
+					//fmt.Println("received \"keep-alive\" peer message")
+				default:
+					//fmt.Printf("received \"%s\" peer message\n", msg.toMsgId(offset+4))
+					if msg.toMsgId(offset+4) == UnChoke {
+						receivedUnchoke = true
+					}
+				}
+
+				offset += 4 + lenPrefix
+			}
+		}
+	}
+
+	// Step 4: send a request messages until a piece is downloaded
+	pieceLength := torrent.Info.PieceLength
+	piecesTotal := torrent.Info.Length / pieceLength
+	if torrent.Info.Length%pieceLength != 0 {
+		piecesTotal += 1
+		if pieceIndex+1 == piecesTotal {
+			pieceLength = torrent.Info.Length % pieceLength
+		}
+	}
+
+	fmt.Printf("PieceIndex=%d totalPieces=%d pieceLength=%d\n", pieceIndex, piecesTotal, pieceLength)
+
+	for pieceBuffer.Len() < pieceLength {
+		blockLength := LenRequestBlockLength
+		if pieceBuffer.Len()+blockLength > pieceLength {
+			blockLength = pieceLength - pieceBuffer.Len()
+		}
+
+		// FIXME: error handling
+		_ = torrent.FillRequestMessage(msg, pieceIndex, pieceBuffer.Len(), blockLength)
+
+		if err = HandlePeerWireProtocol(rw, msg); err != nil {
+			return fmt.Errorf("failed receiving \"%s\" peer message, recv=%d: %s\n", Request, pieceBuffer.Len(), err)
+		}
+
+		// handle received messages
+		for offset := 0; offset < msg.len; {
+			lenPrefix := msg.toInt(offset)
+			switch {
+			case lenPrefix == 0:
+				//fmt.Println("received \"keep-alive\" peer message")
+			default:
+				msgId := msg.toMsgId(offset + OffsetMsgId)
+				//fmt.Printf("received \"%s\" peer message\n", msgId)
+
+				if msgId == Piece {
+					//fmt.Printf("pieceBufferLen=%d , adding=%d\n", pieceBuffer.Len(), LenMsgLenPrefix+lenPrefix-OffsetMsgPieceBlock)
+					pieceBuffer.Write(msg.buffer[offset+OffsetMsgPieceBlock : offset+LenMsgLenPrefix+lenPrefix])
+				}
+			}
+
+			offset += LenMsgLenPrefix + lenPrefix
+		}
+	}
+
+	fmt.Printf("Downloaded pieceIndex=%d: length=%d, expected=%d\n", pieceIndex, pieceBuffer.Len(), pieceLength)
+
+	// Step 5: check piece hash
+	receivedHash := sha1.Sum(pieceBuffer.Bytes())
+
+	var expectedHash [sha1.Size]byte
+	copy(expectedHash[:], torrent.Info.Pieces[pieceIndex*20:pieceIndex*20+20])
+	if receivedHash != expectedHash {
+		fmt.Printf("expected piece hash != received piece hash; pieceIndex=%d!\n", pieceIndex)
+		fmt.Printf("received piece hash: %x\n", receivedHash)
+		fmt.Printf("expected piece hash: %x\n", expectedHash)
+		fmt.Printf("full     piece hash: %x\n", torrent.Info.Pieces)
+		return fmt.Errorf("expected piece hash != received piece hash; pieceIndex=%d!\n", pieceIndex)
+	}
+
+	output, err := os.Create(outputPath)
+	if err != nil {
+		return fmt.Errorf("failed to create output file: %s\n", err)
+	}
+	defer output.Close()
+
+	outputWriter := bufio.NewWriter(output)
+	if _, err = outputWriter.Write(pieceBuffer.Bytes()); err != nil {
+		return fmt.Errorf("failed to create output file: %s\n", err)
+	}
+	if err = outputWriter.Flush(); err != nil {
+		return fmt.Errorf("failed to flush to output file: %s\n", err)
+	}
+
+	return nil
 }
 
 // There are following things:
