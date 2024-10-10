@@ -3,244 +3,29 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/rand"
 	"crypto/sha1"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/codecrafters-io/bittorrent-starter-go/bencode"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
-	"strings"
-	"unicode"
-	// bencode "github.com/jackpal/bencode-go" // Available if you need it!
 )
 
 // Ensures gofmt doesn't remove the "os" encoding/json import (feel free to remove this!)
 var _ = json.Marshal
 
-func bencodeInteger(i int) string {
-	return fmt.Sprintf("i%se", strconv.Itoa(i))
-}
-
-func bencodeString(s string) string {
-	return fmt.Sprintf("%d:%s", len(s), s)
-}
-
-// Example:
-// - 5:hello -> hello
-// - 10:hello12345 -> hello12345
-func decodeBencodeString(bencodedString string) (string, int, error) {
-	index := 0
-
-	switch {
-	case unicode.IsDigit(rune(bencodedString[index])):
-		var firstColonIndex int
-
-		for i := 0; i < len(bencodedString); i++ {
-			if bencodedString[i] == ':' {
-				firstColonIndex = i
-				break
-			}
-		}
-
-		lengthStr := bencodedString[:firstColonIndex]
-
-		length, err := strconv.Atoi(lengthStr)
-		if err != nil {
-			return "", index, err
-		}
-
-		index = firstColonIndex + 1 + length
-		decodedString := bencodedString[firstColonIndex+1 : index]
-
-		return decodedString, index, nil
-	default:
-		return "", 0, fmt.Errorf("invalid BencodeString %q", bencodedString)
-	}
-}
-
-func decodeBencodeInteger(bencodedString string) (int, int, error) {
-	index := 0
-
-	switch c := rune(bencodedString[index]); c {
-	case 'i':
-		indexEnd := strings.Index(bencodedString, "e")
-		integer, err := strconv.Atoi(bencodedString[1:indexEnd])
-		if err != nil {
-			return 0, 0, err
-		}
-
-		index = indexEnd + 1
-		return integer, index, nil
-
-	default:
-		return 0, 0, fmt.Errorf("invalid BencodeInteger %q", bencodedString)
-	}
-}
-
-func decodeBencodeList(bencodedString string) ([]interface{}, int, error) {
-	index := 0
-	depth := 0
-	l := make([]interface{}, 0)
-
-	for {
-		switch c := rune(bencodedString[index]); {
-		case c == 'e':
-			return l, index + 1, nil
-		case c == 'l':
-			if depth == 0 {
-				index += 1
-				depth += 1
-			} else {
-				// TODO: refactor to not use recursion
-				// this is a nested list
-				nl, relIndex, err := decodeBencodeList(bencodedString[index:])
-				if err != nil {
-					return nil, index, err
-				}
-				l = append(l, nl)
-				index += relIndex
-			}
-		case c == 'i':
-			i, relIndex, err := decodeBencodeInteger(bencodedString[index:])
-			if err != nil {
-				return nil, index, err
-			}
-			l = append(l, i)
-			index += relIndex
-		case unicode.IsDigit(c):
-			s, relIndex, err := decodeBencodeString(bencodedString[index:])
-			if err != nil {
-				return nil, index, err
-			}
-			l = append(l, s)
-			index += relIndex
-		default:
-			return nil, index, fmt.Errorf("invalid BencodeList %q", bencodedString[index:])
-		}
-	}
-}
-
-func decodeBencodeDict(bencodedString string) (map[string]interface{}, int, error) {
-	index := 0
-	depth := 0
-	isValue := false
-	key := ""
-	d := make(map[string]interface{})
-
-	for {
-		switch c := rune(bencodedString[index]); {
-		case c == 'e':
-			return d, index + 1, nil
-		case c == 'd':
-			switch {
-			case depth == 0:
-				index += 1
-				depth += 1
-			case isValue:
-				// TODO: refactor recursion out
-				nd, relIndex, err := decodeBencodeDict(bencodedString[index:])
-				if err != nil {
-					return nil, index, err
-				}
-				d[key] = nd
-				index += relIndex
-				isValue = false
-			default:
-				return nil, index, fmt.Errorf("invalid BencodeDict %q", bencodedString[index:])
-			}
-		case unicode.IsDigit(c):
-			switch {
-			case depth == 0:
-				return nil, index, fmt.Errorf("invalid BencodeDict %q", bencodedString[index:])
-			case !isValue:
-				s, relIndex, err := decodeBencodeString(bencodedString[index:])
-				if err != nil {
-					return nil, index, err
-				}
-				key = s
-				index += relIndex
-				isValue = true
-			case isValue:
-				s, relIndex, err := decodeBencodeString(bencodedString[index:])
-				if err != nil {
-					return nil, index, err
-				}
-				d[key] = s
-				index += relIndex
-				isValue = false
-			default:
-				return nil, index, fmt.Errorf("invalid BencodeDict, unexpected string %q", bencodedString[index:])
-			}
-		case c == 'i':
-			if isValue {
-				i, relIndex, err := decodeBencodeInteger(bencodedString[index:])
-				if err != nil {
-					return nil, index, err
-				}
-				d[key] = i
-				index += relIndex
-				isValue = false
-			} else {
-				return nil, index, fmt.Errorf("invalid BencodeDict, unexpected integer %q", bencodedString[index:])
-			}
-		case c == 'l':
-			if isValue {
-				l, relIndex, err := decodeBencodeList(bencodedString[index:])
-				if err != nil {
-					return nil, index, err
-				}
-				d[key] = l
-				index += relIndex
-				isValue = false
-			} else {
-				return nil, index, fmt.Errorf("invalid BencodeDict, unexpected list %q", bencodedString[index:])
-			}
-		default:
-			return nil, index, fmt.Errorf("invalid BencodeDict %q", bencodedString[index:])
-		}
-	}
-}
-
-func decodeBencode(bencodedString string) (interface{}, error) {
-	c := rune(bencodedString[0])
-	switch {
-	case unicode.IsDigit(c):
-		result, _, err := decodeBencodeString(bencodedString)
-		if err != nil {
-			return "", err
-		}
-		return result, nil
-	case c == 'i':
-		result, _, err := decodeBencodeInteger(bencodedString)
-		if err != nil {
-			return "", err
-		}
-		return result, nil
-	case c == 'l':
-		result, _, err := decodeBencodeList(bencodedString)
-		if err != nil {
-			return "", err
-		}
-		return result, nil
-	case c == 'd':
-		result, _, err := decodeBencodeDict(bencodedString)
-		if err != nil {
-			return "", err
-		}
-		return result, nil
-	default:
-		return "", fmt.Errorf("Unsupported:\n%s\n", bencodedString)
-	}
-}
-
 type TorrentFile struct {
 	FilePath string
 	Announce string
 	Info     TorrentFileInfo
+	Progress TorrentProgress
 }
 
 type TorrentFileInfo struct {
@@ -248,6 +33,15 @@ type TorrentFileInfo struct {
 	Name        string
 	PieceLength int
 	Pieces      string
+}
+
+type TorrentProgress struct {
+	PeerID     [20]byte
+	Port       int
+	Uploaded   int
+	Downloaded int
+	Left       int
+	Compact    int
 }
 
 func getInfoValue[T comparable](info map[string]interface{}, key string, valueType T) (T, error) {
@@ -277,7 +71,7 @@ func (torrent *TorrentFile) InfoHash() ([20]byte, error) {
 	return sha1.Sum(data[infoStart : len(data)-1]), nil
 }
 
-func NewTorrentFile(filePath string) (*TorrentFile, error) {
+func NewTorrentFile(filePath string, port int) (*TorrentFile, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
 		return nil, err
@@ -297,10 +91,10 @@ func NewTorrentFile(filePath string) (*TorrentFile, error) {
 		return nil, err
 	}
 	if len(buf) != size {
-		return nil, fmt.Errorf("did not read full torrent file, file size: %d, read: %d", size, len(buf))
+		return nil, fmt.Errorf("did not read full torrent file, file len: %d, read: %d", size, len(buf))
 	}
 
-	d, _, err := decodeBencodeDict(string(buf))
+	d, _, err := bencode.DecodeBencodeDict(string(buf))
 	if err != nil {
 		return nil, err
 	}
@@ -344,19 +138,17 @@ func NewTorrentFile(filePath string) (*TorrentFile, error) {
 		return nil, err
 	}
 
+	torrent.Progress.Compact = 1
+	torrent.Progress.Port = port
+	_, err = rand.Read(torrent.Progress.PeerID[:])
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate peer_id: %s\n", err)
+	}
+
 	return torrent, nil
 }
 
-type TorrentProgress struct {
-	PeerID     string
-	Port       int
-	Uploaded   int
-	Downloaded int
-	Left       int
-	Compact    int
-}
-
-func (torrent *TorrentFile) newTrackerRequestURL(progress *TorrentProgress) (string, error) {
+func (torrent *TorrentFile) newTrackerRequestURL() (string, error) {
 	infoHash, err := torrent.InfoHash()
 	if err != nil {
 		return "", err
@@ -364,20 +156,20 @@ func (torrent *TorrentFile) newTrackerRequestURL(progress *TorrentProgress) (str
 
 	trackerParams := url.Values{}
 	trackerParams.Set("info_hash", string(infoHash[:]))
-	trackerParams.Set("peer_id", progress.PeerID)
-	trackerParams.Set("port", strconv.Itoa(progress.Port))
-	trackerParams.Set("uploaded", strconv.Itoa(progress.Uploaded))
-	trackerParams.Set("downloaded", strconv.Itoa(progress.Downloaded))
+	trackerParams.Set("peer_id", string(torrent.Progress.PeerID[:]))
+	trackerParams.Set("port", strconv.Itoa(torrent.Progress.Port))
+	trackerParams.Set("uploaded", strconv.Itoa(torrent.Progress.Uploaded))
+	trackerParams.Set("downloaded", strconv.Itoa(torrent.Progress.Downloaded))
 	// TODO: this should be calculated in the future
 	trackerParams.Set("left", strconv.Itoa(torrent.Info.Length))
-	trackerParams.Set("compact", strconv.Itoa(progress.Compact))
+	trackerParams.Set("compact", strconv.Itoa(torrent.Progress.Compact))
 
 	trackerRequestURL := fmt.Sprintf("%s?%s", torrent.Announce, trackerParams.Encode())
 	return trackerRequestURL, nil
 }
 
-func (torrent *TorrentFile) GetTrackerResponse(progress *TorrentProgress) (*TrackerResponse, error) {
-	trackerRequestURL, err := torrent.newTrackerRequestURL(progress)
+func (torrent *TorrentFile) GetTrackerResponse() (*TrackerResponse, error) {
+	trackerRequestURL, err := torrent.newTrackerRequestURL()
 	if err != nil {
 		return nil, err
 	}
@@ -393,7 +185,7 @@ func (torrent *TorrentFile) GetTrackerResponse(progress *TorrentProgress) (*Trac
 		return nil, err
 	}
 
-	trackerResponse, _, err := decodeBencodeDict(string(body))
+	trackerResponse, _, err := bencode.DecodeBencodeDict(string(body))
 	if err != nil {
 		return nil, err
 	}
@@ -430,22 +222,36 @@ func (peer TrackerPeer) String() string {
 	return fmt.Sprintf("%s:%d", peer.Ip, peer.Port)
 }
 
-type HandshakeMessage struct {
-	Length   byte
-	Protocol [19]byte
-	Reserved [8]byte
-	InfoHash [20]byte
-	PeerId   [20]byte
+func (torrent *TorrentFile) FillHandshakeMessage(msg *PeerWireMessage) error {
+	infoHash, err := torrent.InfoHash()
+	if err != nil {
+		return fmt.Errorf("FillHandshakeMessage: failed to generate info_hash: %s", err)
+	}
+
+	msg.buffer[OffsetHandshakePstrlen] = 19
+	copy(msg.buffer[OffsetHandshakePstr:], "BitTorrent protocol")
+	copy(msg.buffer[OffsetHandshakeReserved:], make([]byte, 8))
+	copy(msg.buffer[OffsetHandshakeInfoHash:], infoHash[:])
+	copy(msg.buffer[OffsetHandshakePeerId:], torrent.Progress.PeerID[:])
+
+	msg.len = LenHandshakeMsg
+	msg.handshake = true
+
+	return nil
 }
 
-func NewHanshakeMessage(peerId [20]byte, infoHash [20]byte) *HandshakeMessage {
-	msg := &HandshakeMessage{
-		Length:   19,
-		InfoHash: infoHash,
-		PeerId:   peerId,
-	}
-	copy(msg.Protocol[:], "BitTorrent protocol")
-	return msg
+func (torrent *TorrentFile) FillRequestMessage(msg *PeerWireMessage, pieceIndex, begin, length int) error {
+	clear(msg.buffer[:LenMsgLenPrefix+LenMsgReq])
+	msg.buffer[3] = LenMsgReq
+	msg.buffer[OffsetMsgId] = byte(Request)
+	binary.BigEndian.PutUint32(msg.buffer[OffsetMsgReqIndex:], uint32(pieceIndex))
+	binary.BigEndian.PutUint32(msg.buffer[OffsetMsgReqBegin:], uint32(begin))
+	binary.BigEndian.PutUint32(msg.buffer[OffsetMsgReqLength:], uint32(length))
+
+	msg.len = LenMsgLenPrefix + LenMsgReq
+	msg.handshake = false
+
+	return nil
 }
 
 func main() {
@@ -455,7 +261,7 @@ func main() {
 	case "decode":
 		bencodedValue := os.Args[2]
 
-		decoded, err := decodeBencode(bencodedValue)
+		decoded, err := bencode.DecodeBencode(bencodedValue)
 		if err != nil {
 			fmt.Println(err)
 			os.Exit(1)
@@ -466,7 +272,7 @@ func main() {
 	case "info":
 		filePath := os.Args[2]
 
-		torrent, err := NewTorrentFile(filePath)
+		torrent, err := NewTorrentFile(filePath, 1234)
 		if err != nil {
 			fmt.Println(err)
 			os.Exit(1)
@@ -490,15 +296,13 @@ func main() {
 	case "peers":
 		filePath := os.Args[2]
 
-		torrent, err := NewTorrentFile(filePath)
+		torrent, err := NewTorrentFile(filePath, 1234)
 		if err != nil {
 			fmt.Println(err)
 			os.Exit(1)
 		}
 
-		progress := &TorrentProgress{PeerID: "00112233445566778899", Port: 1234, Compact: 1}
-
-		response, err := torrent.GetTrackerResponse(progress)
+		response, err := torrent.GetTrackerResponse()
 		if err != nil {
 			fmt.Println(err)
 			os.Exit(1)
@@ -511,25 +315,14 @@ func main() {
 		filePath := os.Args[2]
 		peerInfo := os.Args[3]
 
-		torrent, err := NewTorrentFile(filePath)
+		torrent, err := NewTorrentFile(filePath, 1234)
 		if err != nil {
 			fmt.Println(err)
 			os.Exit(1)
 		}
 
-		progress := &TorrentProgress{PeerID: "00112233445566778899", Port: 1234, Compact: 1}
-		peerId := []byte(progress.PeerID)
-		infoHash, err := torrent.InfoHash()
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
-		msg := NewHanshakeMessage([20]byte(peerId), infoHash)
-		var buf bytes.Buffer
-		err = binary.Write(&buf, binary.BigEndian, msg)
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
+		msg := PeerWireMessage{
+			buffer: make([]byte, 1024),
 		}
 
 		conn, err := net.Dial("tcp", peerInfo)
@@ -539,21 +332,385 @@ func main() {
 		}
 		defer conn.Close()
 
-		writer := bufio.NewWriter(conn)
-		writer.Write(buf.Bytes())
-		writer.Flush()
+		rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
 
-		reader := bufio.NewReader(conn)
-		var handshakeResponse HandshakeMessage
-		err = binary.Read(reader, binary.BigEndian, &handshakeResponse)
+		// Handshake
+		if err = torrent.FillHandshakeMessage(&msg); err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		if err = HandlePeerWireProtocol(rw, &msg); err != nil {
+			fmt.Printf("failed to send handshake: %s\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("Peer ID: %x\n", msg.buffer[OffsetHandshakePeerId:LenHandshakeMsg])
+
+	case "download_piece":
+		// ./your_bittorrent.sh download_piece -o ./test-piece-0 sample.torrent 0
+		outputPath := os.Args[3]
+		filePath := os.Args[4]
+		pieceIndex, err := strconv.Atoi(os.Args[5])
+		if err != nil {
+			fmt.Printf("failed to parse pieceIndex: %s\n", err)
+			os.Exit(1)
+		}
+
+		torrent, err := NewTorrentFile(filePath, 1234)
 		if err != nil {
 			fmt.Println(err)
 			os.Exit(1)
 		}
 
-		fmt.Printf("Peer ID: %x\n", handshakeResponse.PeerId)
+		trackerResponse, err := torrent.GetTrackerResponse()
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+
+		// FIXME: check if this actually sets the capacity to hold whole piece
+		pieceBuffer := bytes.NewBuffer(make([]byte, 0, torrent.Info.PieceLength))
+
+		// make sure that it has enough space in case different messages are received
+		msg := PeerWireMessage{
+			buffer: make([]byte, LenRequestBlockLength*2),
+		}
+
+		// Connection to a peer
+		peerIndex := 0
+		conn, err := net.Dial("tcp", trackerResponse.Peers[peerIndex].String())
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		defer conn.Close()
+
+		rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
+
+		// Handshake
+		if err = torrent.FillHandshakeMessage(&msg); err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+
+		if err = HandlePeerWireProtocol(rw, &msg); err != nil {
+			fmt.Printf("failed handshake: %s\n", err)
+			os.Exit(1)
+		}
+
+		// no more handshake messages from here on
+		msg.handshake = false
+
+		fmt.Printf("Peer ID: %x\n", msg.buffer[OffsetHandshakePeerId:LenHandshakeMsg])
+
+		// Step 1: wait for bitfield message from the peer
+		// The bitfield message may only be sent immediately after the handshaking sequence is completed,
+		// and BEFORE any other messages are sent.
+		// It is optional, and need not be sent if a client has no pieces.
+		receivedBitfield := false
+		if msg.len > LenHandshakeMsg {
+			for offset := LenHandshakeMsg; offset < msg.len; {
+				lenPrefix := msg.toInt(offset)
+				fmt.Printf("LengthPrefix=%d\n", lenPrefix)
+				switch {
+				case lenPrefix == 0:
+				//	fmt.Println("received \"keep-alive\" peer message after handshake")
+				default:
+					//fmt.Printf("received \"%s\" peer message after handshake\n", msg.toMsgId(offset+4))
+					// TODO: implement bitfield checks
+					receivedBitfield = true
+				}
+
+				offset += 4 + lenPrefix
+			}
+		}
+
+		for !receivedBitfield {
+			// just send a keep-alive until we receive bitfield
+			clear(msg.buffer[0:4])
+			msg.len = 4
+			if err = HandlePeerWireProtocol(rw, &msg); err != nil {
+				fmt.Printf("failed receiving \"bitfield\" peer message: %s\n", err)
+				os.Exit(1)
+			}
+
+			for offset := 0; offset < msg.len; {
+				lenPrefix := msg.toInt(offset)
+
+				switch {
+				case lenPrefix == 0:
+					//fmt.Println("received \"keep-alive\" peer message")
+				default:
+					//fmt.Printf("received \"%s\" peer message\n", msg.toMsgId(offset+4))
+					// TODO: implement bitfield checks
+					receivedBitfield = true
+				}
+
+				offset += 4 + lenPrefix
+			}
+		}
+
+		// Step 2: send an interested message
+		// Step 3: wait for unchoke message
+		for receivedUnchoke := false; !receivedUnchoke; {
+			copy(msg.buffer, []byte{0, 0, 0, 1, byte(Interested)})
+			msg.len = 5
+			if err = HandlePeerWireProtocol(rw, &msg); err != nil {
+				fmt.Printf("failed receiving \"unchoke\" peer message: %s\n", err)
+				os.Exit(1)
+			}
+			for offset := 0; offset < msg.len; {
+				lenPrefix := msg.toInt(offset)
+				switch {
+				case lenPrefix == 0:
+					//fmt.Println("received \"keep-alive\" peer message")
+				default:
+					//fmt.Printf("received \"%s\" peer message\n", msg.toMsgId(offset+4))
+					if msg.toMsgId(offset+4) == UnChoke {
+						receivedUnchoke = true
+					}
+				}
+
+				offset += 4 + lenPrefix
+			}
+		}
+
+		// Step 4: send a request messages until a piece is downloaded
+		pieceLength := torrent.Info.PieceLength
+		piecesTotal := torrent.Info.Length / pieceLength
+		if torrent.Info.Length%pieceLength != 0 {
+			piecesTotal += 1
+			if pieceIndex+1 == piecesTotal {
+				pieceLength = torrent.Info.Length % pieceLength
+			}
+		}
+
+		fmt.Printf("PieceIndex=%d totalPieces=%d pieceLength=%d\n", pieceIndex, piecesTotal, pieceLength)
+
+		for pieceBuffer.Len() < pieceLength {
+			blockLength := LenRequestBlockLength
+			if pieceBuffer.Len()+blockLength > pieceLength {
+				blockLength = pieceLength - pieceBuffer.Len()
+			}
+
+			// FIXME: error handling
+			_ = torrent.FillRequestMessage(&msg, pieceIndex, pieceBuffer.Len(), blockLength)
+
+			if err = HandlePeerWireProtocol(rw, &msg); err != nil {
+				fmt.Printf("failed receiving \"%s\" peer message, recv=%d: %s\n", Request, pieceBuffer.Len(), err)
+				os.Exit(1)
+			}
+
+			// handle received messages
+			for offset := 0; offset < msg.len; {
+				lenPrefix := msg.toInt(offset)
+				switch {
+				case lenPrefix == 0:
+					//fmt.Println("received \"keep-alive\" peer message")
+				default:
+					msgId := msg.toMsgId(offset + OffsetMsgId)
+					//fmt.Printf("received \"%s\" peer message\n", msgId)
+
+					if msgId == Piece {
+						//fmt.Printf("pieceBufferLen=%d , adding=%d\n", pieceBuffer.Len(), LenMsgLenPrefix+lenPrefix-OffsetMsgPieceBlock)
+						pieceBuffer.Write(msg.buffer[offset+OffsetMsgPieceBlock : offset+LenMsgLenPrefix+lenPrefix])
+					}
+				}
+
+				offset += LenMsgLenPrefix + lenPrefix
+			}
+		}
+
+		fmt.Printf("Downloaded piece: length=%d, expected=%d\n", pieceBuffer.Len(), torrent.Info.PieceLength)
+
+		// Step 5: check piece hash
+		receivedHash := sha1.Sum(pieceBuffer.Bytes())
+
+		var expectedHash [sha1.Size]byte
+		copy(expectedHash[:], torrent.Info.Pieces[pieceIndex*20:pieceIndex*20+20])
+		if receivedHash != expectedHash {
+			fmt.Printf("expected piece hash != received piece hash; pieceIndex=%d!\n", pieceIndex)
+			fmt.Printf("received piece hash: %x\n", receivedHash)
+			fmt.Printf("expected piece hash: %x\n", expectedHash)
+			fmt.Printf("full     piece hash: %x\n", torrent.Info.Pieces)
+			os.Exit(1)
+		}
+
+		output, err := os.Create(outputPath)
+		if err != nil {
+			fmt.Println("Failed to create output file:", err)
+			os.Exit(1)
+		}
+		outputWriter := bufio.NewWriter(output)
+		if _, err = outputWriter.Write(pieceBuffer.Bytes()); err != nil {
+			fmt.Println("Failed to create output file:", err)
+			os.Exit(1)
+		}
+		if err = outputWriter.Flush(); err != nil {
+			fmt.Println("Failed to flush to output file:", err)
+			os.Exit(1)
+		}
 
 	default:
 		fmt.Println("Unknown command: " + command)
 	}
 }
+
+// There are following things:
+// 1. Read tracker URL from torrent file
+// 2. Perform tracker GET request
+// 3. Establish TCP connection with a peer
+// 3.1 Perform the handshake
+// 3.2 Exchange messages to download the file
+// 3.2.1 Multiple peer messages are required to download a piece, which might also fail
+
+// Steps 1. and 2. should be done from single instance - :
+//   * Communicate with tracker
+//   * Keep track of downloaded pieces
+//   * Save pieces to files / save full file
+
+// Step 3. should be done per peer
+//   * Handle TCP connection with the peer
+//   * Keep track of blocks received
+//   * On connection error, report the progress to main instance
+//   * When full piece is downloaded, notify main instance and wait for further messages
+
+// This structure is used for PeerWireProtocol, both for sending and receiving messages
+// it contains a buffer that contains the message that should be sent and then is used
+// for receiving data. If handshake bool is set, then it is a handshake, otherwise
+// it will wait to receive all bytes in the length prefix
+// if len is <0 , then no message will be sent, only waited for
+type PeerWireMessage struct {
+	buffer    []byte
+	len       int
+	handshake bool
+}
+
+// decode bigEndian uint32 from buffer index
+func (msg *PeerWireMessage) toInt(index int) int {
+	return int(binary.BigEndian.Uint32(msg.buffer[index:]))
+}
+
+// convert byte to PeerWireMessageId at buffer index
+func (msg *PeerWireMessage) toMsgId(index int) PeerWireMessageId {
+	return PeerWireMessageId(msg.buffer[index])
+}
+
+// HandlePeerWireProtocol
+// Note: provided message must ensure that there is enough space in the buffer
+// Note: following handshake response, there might be peer messages in the same buffer
+// TODO: check for keep-alive messages, so that they dont overflow the buffer
+func HandlePeerWireProtocol(rw *bufio.ReadWriter, msg *PeerWireMessage) error {
+	if msg.len > 0 {
+		_, err := rw.Write(msg.buffer[:msg.len])
+		if err != nil {
+			return errors.New("failed to write message to TCP writer: " + err.Error())
+		}
+		if err = rw.Flush(); err != nil {
+			return errors.New("failed to flush TCP writer: " + err.Error())
+		}
+	}
+
+	var err error
+	msg.len, err = rw.Read(msg.buffer)
+	if err != nil {
+		if err == io.EOF {
+			return err
+		}
+		return errors.New("failed to read message from TCP reader: " + err.Error())
+	}
+	if msg.len < 4 {
+		// this applies also to handshake messages
+		return errors.New("received peer message is too short")
+	}
+	if msg.handshake {
+		// handshake messages do not have length-prefix
+		return nil
+	}
+
+	lengthPrefix := int(binary.BigEndian.Uint32(msg.buffer))
+	for msg.len < lengthPrefix+4 {
+		received, err := rw.Read(msg.buffer[msg.len:])
+		if err != nil {
+			if err == io.EOF {
+				return err
+			} else {
+				return errors.New("failed to read message from TCP reader: " + err.Error())
+			}
+		}
+
+		msg.len += received
+	}
+
+	if msg.len > lengthPrefix+4 {
+		return fmt.Errorf("received peer message is too long: %d", msg.len)
+	}
+
+	return nil
+}
+
+type PeerWireMessageId byte
+
+const (
+	Choke PeerWireMessageId = iota
+	UnChoke
+	Interested
+	NotInterested
+	Have
+	Bitfield
+	Request
+	Piece
+	Cancel
+)
+
+var PeerWireMessageIds = map[PeerWireMessageId]string{
+	Choke:         "choke",
+	UnChoke:       "unchoke",
+	Interested:    "interested",
+	NotInterested: "not interested",
+	Have:          "have",
+	Bitfield:      "bitfield",
+	Request:       "request",
+	Piece:         "piece",
+	Cancel:        "cancel",
+}
+
+func (id PeerWireMessageId) String() string {
+	return PeerWireMessageIds[id]
+}
+
+// Handshake message constants for version 1.0 of the BitTorrent protocol
+const (
+	LenHandshakePstrlen     = 1
+	LenHandshakePstr        = 19 // protocol
+	LenHandshakeReserved    = 8
+	LenHandshakeInfoHash    = 20
+	LenHandshakePeerId      = 20
+	LenHandshakeMsg         = LenHandshakePstrlen + LenHandshakePstr + LenHandshakeReserved + LenHandshakeInfoHash + LenHandshakePeerId
+	OffsetHandshakePstrlen  = 0
+	OffsetHandshakePstr     = OffsetHandshakePstrlen + LenHandshakePstrlen // protocol
+	OffsetHandshakeReserved = OffsetHandshakePstr + LenHandshakePstr
+	OffsetHandshakeInfoHash = OffsetHandshakeReserved + LenHandshakeReserved
+	OffsetHandshakePeerId   = OffsetHandshakeInfoHash + LenHandshakeInfoHash
+)
+
+// Stardard len for mainline version 4
+const (
+	LenRequestBlockLength = 16 * 1024
+)
+
+// Peer wire message contansts
+const (
+	LenMsgReq           = 13
+	LenMsgLenPrefix     = 4
+	LenMsgMessageId     = 1
+	LenMsgInteger       = 4
+	OffsetMsgLenPrefix  = 0
+	OffsetMsgId         = OffsetMsgLenPrefix + LenMsgLenPrefix
+	OffsetMsgReqIndex   = OffsetMsgId + LenMsgMessageId
+	OffsetMsgReqBegin   = OffsetMsgReqIndex + LenMsgInteger
+	OffsetMsgReqLength  = OffsetMsgReqBegin + LenMsgInteger
+	OffsetMsgPieceIndex = OffsetMsgReqIndex
+	OffsetMsgPieceBegin = OffsetMsgReqBegin
+	OffsetMsgPieceBlock = OffsetMsgReqLength
+)
