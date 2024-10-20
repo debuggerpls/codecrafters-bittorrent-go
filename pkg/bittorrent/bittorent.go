@@ -892,25 +892,6 @@ func NewPeerState() *PeerState {
 	}
 }
 
-func HandleOutgoingMessages(ctx context.Context, w io.Writer, out <-chan Message, errs chan<- error) {
-	// FIXME: context is required here for graceful shutdown
-	for {
-		select {
-		case <-ctx.Done():
-			log.Printf("HandleOutgoingMessages cancelled\n")
-			return
-		case m := <-out:
-			log.Printf("Outgoing message: %s", m.Type())
-			_, err := m.WriteTo(w)
-			if err != nil {
-				// FIXME: is more explanation needed?
-				errs <- err
-				return
-			}
-		}
-	}
-}
-
 func HandleIncomingMessages(conn net.Conn, in chan<- Message, errs chan<- error) {
 	// FIXME: context is required here for graceful shutdown
 	buf := make([]byte, LEN_MESSAGE_MAX)
@@ -955,163 +936,6 @@ func HandleIncomingMessages(conn net.Conn, in chan<- Message, errs chan<- error)
 			tail = 0
 		}
 	}
-}
-
-func (handler *PeerStateHandler) downloadPiece(ctx context.Context, torrent *TorrentFile, piece *Piece) error {
-	log.Printf("starting pieceIndex=%d\n", piece.Idx)
-
-	//if !handler.peerState.done_handshake {
-	//	handler.outgoing <- *NewHandshakeMessage(torrent.Progress.PeerID, infoHash)
-	//}
-
-	for {
-		select {
-		case <-ctx.Done():
-			// TODO: do we need a special case here or return suffices?
-			return nil
-
-		case e := <-handler.errs:
-			return e
-		}
-	}
-
-	//log.Printf("Peer ID: %x\n", msg.Buffer[OffsetHandshakePeerId:LenHandshakeMsg])
-
-	//// Step 1: wait for bitfield message from the peer
-	//// The bitfield message may only be sent immediately after the handshaking sequence is completed,
-	//// and BEFORE any other messages are sent.
-	//// It is optional, and need not be sent if a client has no pieces.
-	//receivedBitfield := false
-	//if msg.Len > LenHandshakeMsg {
-	//	for offset := LenHandshakeMsg; offset < msg.Len; {
-	//		lenPrefix := msg.ToInt(offset)
-	//		switch {
-	//		case lenPrefix == 0:
-	//		//	fmt.Println("received \"keep-alive\" peer message after handshake")
-	//		default:
-	//			//fmt.Printf("received \"%s\" peer message after handshake\n", msg.ToMsgId(offset+4))
-	//			// TODO: implement bitfield checks
-	//			receivedBitfield = true
-	//		}
-	//
-	//		offset += 4 + lenPrefix
-	//	}
-	//}
-	//
-	//for !receivedBitfield {
-	//	// just send a keep-alive until we receive bitfield
-	//	clear(msg.Buffer[0:4])
-	//	msg.Len = 4
-	//	if err = HandlePeerWireProtocol(rw, msg); err != nil {
-	//		return fmt.Errorf("failed receiving \"bitfield\" peer message: %s\n", err)
-	//	}
-	//
-	//	for offset := 0; offset < msg.Len; {
-	//		lenPrefix := msg.ToInt(offset)
-	//
-	//		switch {
-	//		case lenPrefix == 0:
-	//			//fmt.Println("received \"keep-alive\" peer message")
-	//		default:
-	//			//fmt.Printf("received \"%s\" peer message\n", msg.ToMsgId(offset+4))
-	//			// TODO: implement bitfield checks
-	//			receivedBitfield = true
-	//		}
-	//
-	//		offset += 4 + lenPrefix
-	//	}
-	//}
-	//
-	//// Step 2: send an interested message
-	//// Step 3: wait for unchoke message
-	//for receivedUnchoke := false; !receivedUnchoke; {
-	//	copy(msg.Buffer, []byte{0, 0, 0, 1, byte(INTERESTED)})
-	//	msg.Len = 5
-	//	if err = HandlePeerWireProtocol(rw, msg); err != nil {
-	//		return fmt.Errorf("failed receiving \"unchoke\" peer message: %s\n", err)
-	//	}
-	//	for offset := 0; offset < msg.Len; {
-	//		lenPrefix := msg.ToInt(offset)
-	//		switch {
-	//		case lenPrefix == 0:
-	//			//fmt.Println("received \"keep-alive\" peer message")
-	//		default:
-	//			//fmt.Printf("received \"%s\" peer message\n", msg.ToMsgId(offset+4))
-	//			if msg.ToMsgId(offset+4) == UNCHOKE {
-	//				receivedUnchoke = true
-	//			}
-	//		}
-	//
-	//		offset += 4 + lenPrefix
-	//	}
-	//}
-	//
-	//for piece.Buffer.Len() < piece.Len {
-	//	blockLength := LenRequestBlockLength
-	//	if piece.Buffer.Len()+blockLength > piece.Len {
-	//		blockLength = piece.Len - piece.Buffer.Len()
-	//	}
-	//
-	//	// FIXME: error handling
-	//	_ = torrent.FillRequestMessage(msg, piece.Idx, piece.Buffer.Len(), blockLength)
-	//
-	//	if err = HandlePeerWireProtocol(rw, msg); err != nil {
-	//		return fmt.Errorf("failed receiving \"%s\" peer message, recv=%d: %s\n", REQUEST, piece.Buffer.Len(), err)
-	//	}
-	//
-	//	// HandleMessage received messages
-	//	for offset := 0; offset < msg.Len; {
-	//		lenPrefix := msg.ToInt(offset)
-	//		switch {
-	//		case lenPrefix == 0:
-	//			//fmt.Println("received \"keep-alive\" peer message")
-	//		default:
-	//			msgId := msg.ToMsgId(offset + OffsetMsgId)
-	//			//fmt.Printf("received \"%s\" peer message\n", msgId)
-	//
-	//			if msgId == PIECE {
-	//				//fmt.Printf("pieceBufferLen=%d , adding=%d\n", pieceBuffer.Len(), LenMsgLenPrefix+lenPrefix-OffsetMsgPieceBlock)
-	//				piece.Buffer.Write(msg.Buffer[offset+OffsetMsgPieceBlock : offset+LenMsgLenPrefix+lenPrefix])
-	//			}
-	//		}
-	//
-	//		offset += LenMsgLenPrefix + lenPrefix
-	//	}
-	//}
-	//
-	//log.Printf("Downloaded pieceIndex=%d: length=%d, expected=%d\n", piece.Idx, piece.Buffer.Len(), piece.Len)
-	//
-	//// Step 5: check piece hash
-	//receivedHash := sha1.Sum(piece.Buffer.Bytes())
-	//
-	//var expectedHash [sha1.Size]byte
-	//copy(expectedHash[:], torrent.Info.Pieces[piece.Idx*20:piece.Idx*20+20])
-	//if receivedHash != expectedHash {
-	//	fmt.Printf("expected piece hash != received piece hash; pieceIndex=%d!\n", piece.Idx)
-	//	fmt.Printf("received piece hash: %x\n", receivedHash)
-	//	fmt.Printf("expected piece hash: %x\n", expectedHash)
-	//	fmt.Printf("full     piece hash: %x\n", torrent.Info.Pieces)
-	//	return fmt.Errorf("expected piece hash != received piece hash; pieceIndex=%d!\n", piece.Idx)
-	//}
-	//output, err := os.Create(piece.Path)
-	//if err != nil {
-	//	return fmt.Errorf("failed to create output file: %s\n", err)
-	//}
-	//defer output.Close()
-	//
-	//outputWriter := bufio.NewWriter(output)
-	//if _, err = outputWriter.Write(piece.Buffer.Bytes()); err != nil {
-	//	return fmt.Errorf("failed to create output file: %s\n", err)
-	//}
-	//if err = outputWriter.Flush(); err != nil {
-	//	return fmt.Errorf("failed to flush to output file: %s\n", err)
-	//}
-	//
-	//// FIXME: should this be done here or outside?
-	//piece.Done = true
-	//
-
-	return nil
 }
 
 func NewHandshakeMessage(peerId [20]byte, infoHash [20]byte) *Message {
@@ -1184,4 +1008,16 @@ func (p *PieceMessage) Block() []byte {
 
 func (m *Message) AsPiece() *PieceMessage {
 	return &PieceMessage{Message: *m}
+}
+
+type HandshakeMessage struct {
+	Message
+}
+
+func (handshake *HandshakeMessage) PeerId() [20]byte {
+	return [20]byte(handshake.data[OffsetHandshakePeerId : OffsetHandshakePeerId+20])
+}
+
+func (m *Message) AsHandshake() *HandshakeMessage {
+	return &HandshakeMessage{Message: *m}
 }

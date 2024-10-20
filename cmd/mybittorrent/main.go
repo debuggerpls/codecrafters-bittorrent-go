@@ -86,10 +86,6 @@ func main() {
 			os.Exit(1)
 		}
 
-		msg := bittorrent.PeerWireMessage{
-			Buffer: make([]byte, 1024),
-		}
-
 		conn, err := net.Dial("tcp", peerInfo)
 
 		if err != nil {
@@ -98,19 +94,35 @@ func main() {
 		}
 		defer conn.Close()
 
-		rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
+		incoming := make(chan bittorrent.Message)
+		errs := make(chan error)
+		go bittorrent.HandleIncomingMessages(conn, incoming, errs)
 
-		// Handshake
-		if err = torrent.FillHandshakeMessage(&msg); err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
-		if err = bittorrent.HandlePeerWireProtocol(rw, &msg); err != nil {
-			fmt.Printf("failed to send handshake: %s\n", err)
+		infoHash, err := torrent.InfoHash()
+		if err != nil {
+			fmt.Println("fail infohash:", err)
 			os.Exit(1)
 		}
 
-		fmt.Printf("Peer ID: %x\n", msg.Buffer[bittorrent.OffsetHandshakePeerId:bittorrent.LenHandshakeMsg])
+		handshake := bittorrent.NewHandshakeMessage(torrent.Progress.PeerID, infoHash)
+		_, err = handshake.WriteTo(conn)
+		if err != nil {
+			fmt.Println("fail to send handshake:", err)
+			os.Exit(1)
+		}
+
+		select {
+		case in := <-incoming:
+			if in.Type() != bittorrent.HANDSHAKE {
+				fmt.Printf("expected handshake, but got %s\n", in.Type())
+				os.Exit(1)
+			}
+			fmt.Printf("Peer ID: %x\n", in.AsHandshake().PeerId())
+			return
+		case err := <-errs:
+			fmt.Printf("received error: %s", err)
+			os.Exit(1)
+		}
 
 	case "download_piece":
 		// ./your_bittorrent.sh download_piece -o ./test-piece-0 sample.torrent 0
