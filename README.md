@@ -81,3 +81,10 @@ $ ./your_bittorrent.sh download_piece -o ./test-piece-0 sample.torrent 0
 $ ls test-piece-0
 test-piece-0
 ```
+
+### 10. Download a single file
+```
+$ ./your_bittorrent.sh download -o ./tmp/test.txt sample.torrent
+$ ls tmp/test.txt
+tmp/test.txt
+```
