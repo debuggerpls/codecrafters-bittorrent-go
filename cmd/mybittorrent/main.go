@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // Ensures gofmt doesn't remove the "os" encoding/json import (feel free to remove this!)
@@ -318,8 +319,12 @@ func main() {
 		bittorrent.AssertExit(magnetUrl.Scheme, "magnet", "wrong format: %s\n", magnetUrl.Scheme)
 
 		query := magnetUrl.Query()
-		fmt.Printf("Tracker URL: %s\n", query.Get("tr"))
-		fmt.Printf("Info Hash: %s\n", query.Get("xt"))
+		trackerUrl := query.Get("tr")
+		urn := "urn:btih:"
+		infoHash, found := strings.CutPrefix(query.Get("xt"), urn)
+		bittorrent.AssertExit(found, true, "urn not found %q", urn)
+		fmt.Printf("Tracker URL: %s\n", trackerUrl)
+		fmt.Printf("Info Hash: %s\n", infoHash)
 	default:
 		fmt.Println("Unknown command: " + command)
 	}
