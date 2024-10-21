@@ -8,10 +8,8 @@ import (
 	"github.com/codecrafters-io/bittorrent-starter-go/pkg/bittorrent"
 	"log"
 	"net"
-	"net/url"
 	"os"
 	"strconv"
-	"strings"
 )
 
 // Ensures gofmt doesn't remove the "os" encoding/json import (feel free to remove this!)
@@ -312,19 +310,62 @@ func main() {
 
 		fmt.Printf("Downloaded file: %s\n", outputPath)
 	case "magnet_parse":
-		magnetLink := os.Args[2]
+		magnetURL := os.Args[2]
 
-		magnetUrl, err := url.Parse(magnetLink)
+		magnetLink, err := bittorrent.NewMagnetLink(magnetURL, 1234)
 		bittorrent.AssertNotNil(err, "parse error: %s\n", err)
-		bittorrent.AssertExit(magnetUrl.Scheme, "magnet", "wrong format: %s\n", magnetUrl.Scheme)
 
-		query := magnetUrl.Query()
-		trackerUrl := query.Get("tr")
-		urn := "urn:btih:"
-		infoHash, found := strings.CutPrefix(query.Get("xt"), urn)
-		bittorrent.AssertExit(found, true, "urn not found %q", urn)
-		fmt.Printf("Tracker URL: %s\n", trackerUrl)
-		fmt.Printf("Info Hash: %s\n", infoHash)
+		fmt.Printf("Tracker URL: %s\n", magnetLink.TrackerUrl())
+		fmt.Printf("Info Hash: %s\n", magnetLink.InfoHashString())
+	case "magnet_handshake":
+		magnetURL := os.Args[2]
+
+		magnetLink, err := bittorrent.NewMagnetLink(magnetURL, 1234)
+		bittorrent.AssertNotNil(err, "parse error: %s\n", err)
+
+		response, err := magnetLink.GetTrackerResponse()
+		bittorrent.AssertNotNil(err, "failed to get tracker response: %s", err)
+
+		peerInfo := response.Peers[0].String()
+		conn, err := net.Dial("tcp", peerInfo)
+
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		defer conn.Close()
+
+		incoming := make(chan bittorrent.Message)
+		errs := make(chan error)
+		go bittorrent.HandleIncomingMessages(conn, incoming, errs)
+
+		infoHash, err := magnetLink.InfoHash()
+		if err != nil {
+			fmt.Println("fail infohash:", err)
+			os.Exit(1)
+		}
+
+		handshake := bittorrent.NewHandshakeMessage(magnetLink.PeerId, infoHash)
+		handshake.AsHandshake().SetExtensions()
+		_, err = handshake.WriteTo(conn)
+		if err != nil {
+			fmt.Println("fail to send handshake:", err)
+			os.Exit(1)
+		}
+
+		select {
+		case in := <-incoming:
+			if in.Type() != bittorrent.HANDSHAKE {
+				fmt.Printf("expected handshake, but got %s\n", in.Type())
+				os.Exit(1)
+			}
+			fmt.Printf("Peer ID: %x\n", in.AsHandshake().PeerId())
+			return
+		case err := <-errs:
+			fmt.Printf("received error: %s", err)
+			os.Exit(1)
+		}
+
 	default:
 		fmt.Println("Unknown command: " + command)
 	}

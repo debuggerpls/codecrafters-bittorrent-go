@@ -185,11 +185,11 @@ type TorrentProgress struct {
 func getInfoValue[T comparable](info map[string]interface{}, key string, valueType T) (T, error) {
 	value, ok := info[key]
 	if !ok {
-		return valueType, fmt.Errorf("TorrentFile.info.%s: no \"%s\" field in torrent file", key, key)
+		return valueType, fmt.Errorf("info.%s: no \"%s\" field, map=%v", key, key, info)
 	}
 	val, ok := value.(T)
 	if !ok {
-		return valueType, fmt.Errorf("TorrentFile.info.%s: invalid \"%s\" field in torrent file", key, key)
+		return valueType, fmt.Errorf("info.%s: invalid \"%s\" field, map=%v", key, key, info)
 	}
 	return val, nil
 }
@@ -338,9 +338,10 @@ func (torrent *TorrentFile) GetTrackerResponse() (*TrackerResponse, error) {
 		response.Peers = append(response.Peers, TrackerPeer{Ip: net.IPv4(peers[i], peers[i+1], peers[i+2], peers[i+3]), Port: int(binary.BigEndian.Uint16([]byte(peers[i+4:])))})
 	}
 
+	// optional
 	response.Interval, err = getInfoValue(trackerResponse, "interval", response.Interval)
 	if err != nil {
-		return nil, err
+		response.Interval = -1
 	}
 
 	return response, nil
@@ -738,6 +739,11 @@ func (m *Message) AsPiece() *PieceMessage {
 
 type HandshakeMessage struct {
 	Message
+}
+
+func (handshake *HandshakeMessage) SetExtensions() {
+	const offsetExtensionByte = OffsetHandshakeReserved + 5
+	handshake.data[offsetExtensionByte] = 0x10
 }
 
 func (handshake *HandshakeMessage) PeerId() [20]byte {
