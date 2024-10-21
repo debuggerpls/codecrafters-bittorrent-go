@@ -8,6 +8,7 @@ import (
 	"github.com/codecrafters-io/bittorrent-starter-go/pkg/bittorrent"
 	"log"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 )
@@ -309,7 +310,16 @@ func main() {
 		}
 
 		fmt.Printf("Downloaded file: %s\n", outputPath)
+	case "magnet_parse":
+		magnetLink := os.Args[2]
 
+		magnetUrl, err := url.Parse(magnetLink)
+		bittorrent.AssertNotNil(err, "parse error: %s\n", err)
+		bittorrent.AssertExit(magnetUrl.Scheme, "magnet", "wrong format: %s\n", magnetUrl.Scheme)
+
+		query := magnetUrl.Query()
+		fmt.Printf("Tracker URL: %s\n", query.Get("tr"))
+		fmt.Printf("Info Hash: %s\n", query.Get("xt"))
 	default:
 		fmt.Println("Unknown command: " + command)
 	}
