@@ -405,10 +405,11 @@ func main() {
 					}
 
 				case bittorrent.EXTENDED:
-					//decoded, err := bittorrent.DecodeBencode(string(in.AsExtended().ExtensionDict()))
-					//if err != nil {
-					//	panic("Failed to decode dict:" + err.Error())
-					//}
+					decoded, err := bittorrent.DecodeBencode(string(in.AsExtended().ExtensionDict()))
+					if err != nil {
+						panic("Failed to decode dict:" + err.Error())
+					}
+
 					//fmt.Printf("Extended:\n%q\n", decoded)
 					//if state.peerExtended {
 					//	extended := bittorrent.NewExtendedMessage()
@@ -425,6 +426,8 @@ func main() {
 					//	}
 					//}
 					fmt.Printf("Peer ID: %x\n", state.peerId)
+					mDict := decoded.(map[string]interface{})["m"].(map[string]interface{})
+					fmt.Printf("Peer Metadata Extension ID: %d\n", mDict["ut_metadata"])
 					return
 				default:
 					panic("unhandled default case")

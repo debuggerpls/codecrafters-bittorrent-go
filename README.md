@@ -109,3 +109,9 @@ Peer ID: 2d524e302e302e302de33db7666c49ec504ffdcb
 $ ./your_bittorrent.sh magnet_handshake "magnet:?xt=urn:btih:c5fb9894bdaba464811b088d806bdd611ba490af&dn=magnet3.gif&tr=http%3A%2F%2Fbittorrent-test-tracker.codecrafters.io%2Fannounce"
 Peer ID: 2d524e302e302e302de33db7666c49ec504ffdcb
 ```
+
+### 14. Receive extension handshake
+```
+$ ./your_bittorrent.sh magnet_handshake "magnet:?xt=urn:btih:c5fb9894bdaba464811b088d806bdd611ba490af&dn=magnet3.gif&tr=http%3A%2F%2Fbittorrent-test-tracker.codecrafters.io%2Fannounce"
+Peer ID: 2d524e302e302e302de33db7666c49ec504ffdcb
+```
