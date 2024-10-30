@@ -138,7 +138,7 @@ const (
 	OffsetHandshakePeerId   = OffsetHandshakeInfoHash + LenHandshakeInfoHash
 )
 
-// Stardard len for mainline version 4
+// Stardard Len for mainline version 4
 const (
 	LenRequestBlockLength = 16 * 1024
 )
@@ -229,7 +229,7 @@ func NewTorrentFile(filePath string, port int) (*TorrentFile, error) {
 		return nil, err
 	}
 	if len(buf) != size {
-		return nil, fmt.Errorf("did not read full torrent file, file len: %d, read: %d", size, len(buf))
+		return nil, fmt.Errorf("did not read full torrent file, file Len: %d, read: %d", size, len(buf))
 	}
 
 	d, _, err := DecodeBencodeDict(string(buf))
@@ -374,6 +374,7 @@ const (
 	PIECE
 	CANCEL
 	PORT
+	EXTENDED   MessageType = 20
 	KEEP_ALIVE MessageType = 100
 	HANDSHAKE  MessageType = 101
 	INVALID    MessageType = 102
@@ -390,6 +391,7 @@ var MessageTypeNames = map[MessageType]string{
 	PIECE:          "PIECE",
 	CANCEL:         "CANCEL",
 	PORT:           "PORT",
+	EXTENDED:       "EXTENDED",
 	KEEP_ALIVE:     "KEEP_ALIVE",
 	HANDSHAKE:      "HANDSHAKE",
 	INVALID:        "INVALID",
@@ -405,6 +407,11 @@ const (
 	LEN_HANDSHAKE            = 68
 )
 
+const (
+	OFF_EXTENDED_MSG_ID = LEN_PREFIX + LEN_MESSAGE_ID
+	OFF_EXTENDED_DICT   = OFF_EXTENDED_MSG_ID + LEN_MESSAGE_ID
+)
+
 func (t MessageType) String() string {
 	return MessageTypeNames[t]
 }
@@ -414,25 +421,25 @@ var (
 )
 
 type Message struct {
-	data []byte
-	len  int
+	Data []byte
+	Len  int
 }
 
 func (m *Message) Type() MessageType {
-	if m.len < LEN_PREFIX {
-		//log.Printf("m.len < LEN_PREFIX\n")
+	if m.Len < LEN_PREFIX {
+		//log.Printf("m.Len < LEN_PREFIX\n")
 		return INVALID
 	}
 
 	// FIXME: this might not always be the case
-	if m.data[0] == 19 && m.len == LEN_HANDSHAKE {
-		//log.Printf("m.data[0] == 19 && m.len == LEN_HANDSHAKE \n")
+	if m.Data[0] == 19 && m.Len == LEN_HANDSHAKE {
+		//log.Printf("m.Data[0] == 19 && m.Len == LEN_HANDSHAKE \n")
 		return HANDSHAKE
 	}
 
-	length := binary.BigEndian.Uint32(m.data[0:LEN_PREFIX])
-	if m.len != int(length)+LEN_PREFIX {
-		//log.Printf("%d != %d+%d\n", m.len, int(length), LEN_PREFIX)
+	length := binary.BigEndian.Uint32(m.Data[0:LEN_PREFIX])
+	if m.Len != int(length)+LEN_PREFIX {
+		//log.Printf("%d != %d+%d\n", m.Len, int(length), LEN_PREFIX)
 		return INVALID
 	}
 
@@ -441,38 +448,38 @@ func (m *Message) Type() MessageType {
 		return KEEP_ALIVE
 	}
 
-	mType := m.data[LEN_PREFIX]
+	mType := m.Data[LEN_PREFIX]
 	// FIXME: it is very unlikely that the message id is not valid
 	return MessageType(mType)
 }
 
 func (m *Message) Read(b []byte) (n int, err error) {
-	if m.len > len(b) {
+	if m.Len > len(b) {
 		return 0, ErrBufferTooSmall
 	}
 
-	copy(b, m.data[:m.len])
+	copy(b, m.Data[:m.Len])
 	// FIXME: do we need to do this?
-	m.len = 0
-	return m.len, nil
+	m.Len = 0
+	return m.Len, nil
 }
 
 func MessageFromBytes(b []byte) Message {
 	// FIXME: if we assign it in constructor, is it copied automatically?
 	m := Message{
-		data: make([]byte, len(b)),
-		len:  len(b),
+		Data: make([]byte, len(b)),
+		Len:  len(b),
 	}
-	copy(m.data, b)
+	copy(m.Data, b)
 
-	//log.Printf("MessageFromBytes: type=%s len=%d", m.Type(), m.len)
+	//log.Printf("MessageFromBytes: type=%s Len=%d", m.Type(), m.Len)
 
 	return m
 }
 
 func (m *Message) WriteTo(w io.Writer) (int64, error) {
-	n, err := w.Write(m.data[:m.len])
-	m.len -= n
+	n, err := w.Write(m.Data[:m.Len])
+	m.Len -= n
 	return int64(n), err
 }
 
@@ -557,7 +564,7 @@ func (handler *PeerStateHandler) HandleMessage(msg *Message, piece *Piece) *Mess
 	case PIECE:
 		if piece != nil {
 			// add to the buffer
-			//log.Printf("HandleMessage: received piece - cur=%d recv=%d", piece.Buffer.Len(), len(msg.AsPiece().Block()))
+			//log.Printf("HandleMessage: received piece - cur=%d recv=%d", piece.Buffer.Len(), Len(msg.AsPiece().Block()))
 
 			piece.Buffer.Write(msg.AsPiece().Block())
 		} else {
@@ -651,10 +658,10 @@ func HandleIncomingMessages(conn net.Conn, in chan<- Message, errs chan<- error)
 					copy(buf, buf[head:tail])
 				}
 				tail -= head
-				// wait for more data
+				// wait for more Data
 				break
 			}
-			//log.Printf("containsMessage, head=%d, tail=%d, len=%d", head, tail, length)
+			//log.Printf("containsMessage, head=%d, tail=%d, Len=%d", head, tail, length)
 			in <- MessageFromBytes(buf[head : head+length])
 			head += length
 		}
@@ -667,23 +674,23 @@ func HandleIncomingMessages(conn net.Conn, in chan<- Message, errs chan<- error)
 
 func NewHandshakeMessage(peerId [20]byte, infoHash [20]byte) *Message {
 	msg := &Message{
-		data: make([]byte, LEN_HANDSHAKE),
-		len:  LEN_HANDSHAKE,
+		Data: make([]byte, LEN_HANDSHAKE),
+		Len:  LEN_HANDSHAKE,
 	}
 
-	msg.data[OffsetHandshakePstrlen] = 19
-	copy(msg.data[OffsetHandshakePstr:], "BitTorrent protocol")
-	copy(msg.data[OffsetHandshakeReserved:], make([]byte, 8))
-	copy(msg.data[OffsetHandshakeInfoHash:], infoHash[:])
-	copy(msg.data[OffsetHandshakePeerId:], peerId[:])
+	msg.Data[OffsetHandshakePstrlen] = 19
+	copy(msg.Data[OffsetHandshakePstr:], "BitTorrent protocol")
+	copy(msg.Data[OffsetHandshakeReserved:], make([]byte, 8))
+	copy(msg.Data[OffsetHandshakeInfoHash:], infoHash[:])
+	copy(msg.Data[OffsetHandshakePeerId:], peerId[:])
 
 	return msg
 }
 
 func NewInterestedMessage() *Message {
 	msg := &Message{
-		data: []byte{0, 0, 0, 1, byte(INTERESTED)},
-		len:  5,
+		Data: []byte{0, 0, 0, 1, byte(INTERESTED)},
+		Len:  5,
 	}
 
 	return msg
@@ -698,24 +705,33 @@ func NewRequestMessage(index, begin, length int) *Message {
 	)
 
 	msg := &Message{
-		data: make([]byte, msgLength),
-		len:  msgLength,
+		Data: make([]byte, msgLength),
+		Len:  msgLength,
 	}
-	// len=0013
-	msg.data[3] = msgLength - 4
-	msg.data[4] = byte(REQUEST)
-	binary.BigEndian.PutUint32(msg.data[offsetIndex:], uint32(index))
-	binary.BigEndian.PutUint32(msg.data[offsetBegin:], uint32(begin))
-	binary.BigEndian.PutUint32(msg.data[offsetLength:], uint32(length))
+	// Len=0013
+	msg.Data[3] = msgLength - 4
+	msg.Data[4] = byte(REQUEST)
+	binary.BigEndian.PutUint32(msg.Data[offsetIndex:], uint32(index))
+	binary.BigEndian.PutUint32(msg.Data[offsetBegin:], uint32(begin))
+	binary.BigEndian.PutUint32(msg.Data[offsetLength:], uint32(length))
 
 	return msg
 }
 
 func NewKeepAliveMessage() *Message {
 	return &Message{
-		data: make([]byte, 4),
-		len:  4,
+		Data: make([]byte, 4),
+		Len:  4,
 	}
+}
+
+func NewExtendedMessage() *Message {
+	msg := &Message{
+		Data: []byte{0, 0, 0, 2, byte(EXTENDED), byte(EXTENSION_HANDSHAKE)},
+		Len:  6,
+	}
+
+	return msg
 }
 
 type PieceMessage struct {
@@ -730,7 +746,7 @@ func (p *PieceMessage) Block() []byte {
 		block = begin + 4
 	)
 
-	return p.data[block:p.len]
+	return p.Data[block:p.Len]
 }
 
 func (m *Message) AsPiece() *PieceMessage {
@@ -743,13 +759,60 @@ type HandshakeMessage struct {
 
 func (handshake *HandshakeMessage) SetExtensions() {
 	const offsetExtensionByte = OffsetHandshakeReserved + 5
-	handshake.data[offsetExtensionByte] = 0x10
+	handshake.Data[offsetExtensionByte] = 0x10
+}
+
+func (handshake *HandshakeMessage) HasExtensions() bool {
+	const offsetExtensionByte = OffsetHandshakeReserved + 5
+	return (handshake.Data[offsetExtensionByte] & 0x10) == 0x10
 }
 
 func (handshake *HandshakeMessage) PeerId() [20]byte {
-	return [20]byte(handshake.data[OffsetHandshakePeerId : OffsetHandshakePeerId+20])
+	return [20]byte(handshake.Data[OffsetHandshakePeerId : OffsetHandshakePeerId+20])
 }
 
 func (m *Message) AsHandshake() *HandshakeMessage {
 	return &HandshakeMessage{Message: *m}
+}
+
+type ExtendedMessage struct {
+	Message
+}
+
+func (m *Message) AsExtended() *ExtendedMessage {
+	return &ExtendedMessage{Message: *m}
+}
+
+type ExtensionMessageId byte
+
+const (
+	EXTENSION_HANDSHAKE ExtensionMessageId = iota
+)
+
+func (m *ExtendedMessage) ExtensionMessageId() ExtensionMessageId {
+	return ExtensionMessageId(m.Data[OFF_EXTENDED_MSG_ID])
+}
+
+func (m *ExtendedMessage) ExtensionDict() []byte {
+	return m.Data[OFF_EXTENDED_DICT:m.Len]
+}
+
+// TODO: why here I need to give the pointer back, otherwise no changes are visible after calling it?
+func (m *ExtendedMessage) AddDict(d map[string]interface{}) *ExtendedMessage {
+	encodedD := BencodeDict(d)
+	m.Len = 6 + len(encodedD)
+	//fmt.Printf("Encoded Len: %d\n", m.Len)
+	m.Data = append(m.Data, encodedD...)
+
+	//decoded, err := DecodeBencode(string(m.ExtensionDict()))
+	//if err != nil {
+	//	panic("Failed to decode dict:" + err.Error())
+	//}
+	//fmt.Printf("Encoded l=%d s: %q\n", Len(encodedD), encodedD)
+	//fmt.Printf("Encoded dict: %q\n", decoded)
+	binary.BigEndian.PutUint32(m.Data, uint32(2+len(encodedD)))
+	//fmt.Printf("%x ", m.Data)
+	//fmt.Printf("Encoded: %x \n", m.Data)
+
+	return m
 }

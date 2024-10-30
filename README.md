@@ -94,9 +94,17 @@ tmp/test.txt
 $ ./your_bittorrent.sh magnet_parse "magnet:?xt=urn:btih:c5fb9894bdaba464811b088d806bdd611ba490af&dn=magnet3.gif&tr=http%3A%2F%2Fbittorrent-test-tracker.codecrafters.io%2Fannounce"
 Tracker URL: http://bittorrent-test-tracker.codecrafters.io/announce
 Info Hash: c5fb9894bdaba464811b088d806bdd611ba490af
+
+Examples: https://github.com/codecrafters-io/bittorrent-test-seeder/blob/main/torrent_files/magnet_links.txt
 ```
 
 ### 12. Announce extension support
+```
+$ ./your_bittorrent.sh magnet_handshake "magnet:?xt=urn:btih:c5fb9894bdaba464811b088d806bdd611ba490af&dn=magnet3.gif&tr=http%3A%2F%2Fbittorrent-test-tracker.codecrafters.io%2Fannounce"
+Peer ID: 2d524e302e302e302de33db7666c49ec504ffdcb
+```
+
+### 13. Send extension handshake
 ```
 $ ./your_bittorrent.sh magnet_handshake "magnet:?xt=urn:btih:c5fb9894bdaba464811b088d806bdd611ba490af&dn=magnet3.gif&tr=http%3A%2F%2Fbittorrent-test-tracker.codecrafters.io%2Fannounce"
 Peer ID: 2d524e302e302e302de33db7666c49ec504ffdcb

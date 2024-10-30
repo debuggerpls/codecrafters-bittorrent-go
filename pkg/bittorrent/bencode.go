@@ -15,6 +15,43 @@ func BencodeString(s string) string {
 	return fmt.Sprintf("%d:%s", len(s), s)
 }
 
+func BencodeList(l []interface{}) string {
+	output := "l"
+	for _, obj := range l {
+		output += Bencode(obj)
+	}
+	return output + "e"
+}
+
+// TODO: we should sort the map first
+func BencodeDict(d map[string]interface{}) string {
+	output := "d"
+
+	for key, value := range d {
+		output += BencodeString(key)
+		output += Bencode(value)
+	}
+
+	return output + "e"
+}
+
+func Bencode(obj interface{}) string {
+	switch v := obj.(type) {
+	case int:
+		return BencodeInteger(v)
+	case string:
+		return BencodeString(v)
+	case []interface{}:
+		return BencodeList(v)
+	case map[string]interface{}:
+		return BencodeDict(v)
+	default:
+		fmt.Printf("unknown type in list: %T\n", v)
+		panic("")
+		// FIXME: return "" ?
+	}
+}
+
 // Example:
 // - 5:hello -> hello
 // - 10:hello12345 -> hello12345
