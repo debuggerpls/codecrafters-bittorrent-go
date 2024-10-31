@@ -137,3 +137,12 @@ Test magnet links:
 https://github.com/codecrafters-io/bittorrent-test-seeder/blob/main/torrent_files/magnet_links.txt
 ```
 
+### 17. Download a piece
+```
+$ ./your_bittorrent.sh magnet_download_piece -o piece-0 "magnet:?xt=urn:btih:c5fb9894bdaba464811b088d806bdd611ba490af&dn=magnet3.gif&tr=http%3A%2F%2Fbittorrent-test-tracker.codecrafters.io%2Fannounce" 0
+```
+
+### 18. Download the whole file
+```
+$ ./your_bittorrent.sh magnet_download -o sample "magnet:?xt=urn:btih:c5fb9894bdaba464811b088d806bdd611ba490af&dn=magnet3.gif&tr=http%3A%2F%2Fbittorrent-test-tracker.codecrafters.io%2Fannounce"
+```
