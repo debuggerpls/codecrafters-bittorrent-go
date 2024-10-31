@@ -597,6 +597,246 @@ func main() {
 				os.Exit(1)
 			}
 		}
+	case "magnet_download_piece":
+		// ./your_bittorrent.sh magnet_download_piece -o ./test-piece-0 <magnet_link> 0
+		outputPath := os.Args[3]
+		magnetURL := os.Args[4]
+		pieceIndex, err := strconv.Atoi(os.Args[5])
+		if err != nil {
+			fmt.Printf("failed to parse pieceIndex: %s\n", err)
+			os.Exit(1)
+		}
+
+		magnetLink, err := bittorrent.NewMagnetLink(magnetURL, 1234)
+		bittorrent.AssertNotNil(err, "parse error: %s\n", err)
+
+		response, err := magnetLink.GetTrackerResponse()
+		bittorrent.AssertNotNil(err, "failed to get tracker response: %s", err)
+
+		peerInfo := response.Peers[0].String()
+		conn, err := net.Dial("tcp", peerInfo)
+
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		defer conn.Close()
+
+		handler := bittorrent.NewPeerStateHandler()
+		go bittorrent.HandleIncomingMessages(conn, handler.Incoming, handler.Errs)
+
+		infoHash, err := magnetLink.InfoHash()
+		if err != nil {
+			fmt.Println("fail infohash:", err)
+			os.Exit(1)
+		}
+
+		handshake := bittorrent.NewHandshakeMessage(magnetLink.PeerId, infoHash)
+		//fmt.Printf("Handshake: %x \n", handshake.Data)
+		handshake.AsHandshake().SetExtensions()
+		//fmt.Printf("Handshake: %x \n", handshake.Data)
+		_, err = handshake.WriteTo(conn)
+		if err != nil {
+			fmt.Println("fail to send handshake:", err)
+			os.Exit(1)
+		}
+
+		state := struct {
+			doneHandshake  bool
+			doneBitfield   bool
+			peerExtended   bool
+			peerId         [20]byte
+			peerMetadataId int
+			myM            map[string]interface{}
+		}{
+			myM: map[string]interface{}{
+				"ut_metadata": 1,
+				"ut_pex":      2,
+			},
+		}
+
+		// stub torrent file
+		torrent := bittorrent.TorrentFile{
+			FilePath: "non-existent",
+			Announce: magnetLink.TrackerUrl(),
+			Progress: bittorrent.TorrentProgress{
+				Compact: 1,
+				Port:    magnetLink.Port,
+				PeerID:  magnetLink.PeerId,
+			},
+		}
+
+		for {
+			select {
+			case in := <-handler.Incoming:
+				//fmt.Printf("Received: %s\n", in.Type())
+				switch in.Type() {
+				case bittorrent.HANDSHAKE:
+					if state.doneHandshake {
+						panic("Handshake is done already")
+					}
+					state.doneHandshake = true
+					peerId := in.AsHandshake().PeerId()
+					state.peerExtended = in.AsHandshake().HasExtensions()
+					copy(state.peerId[:], peerId[:])
+					//if state.peerExtended {
+					//	fmt.Printf("Peer has Extension bit set\n")
+					//}
+				case bittorrent.BITFIELD:
+					if state.doneBitfield {
+						panic("Bitfield already received")
+					}
+					state.doneBitfield = true
+					//send the extension handshake
+					if state.peerExtended {
+						extended := bittorrent.NewExtendedMessage()
+						//fmt.Printf("Sending l=%myM: %x \n", extended.Len, extended.Data)
+
+						msg := extended.AsExtended().AddDict(map[string]interface{}{
+							"m": state.myM})
+
+						//fmt.Printf("Sending l=%myM: %x \n", msg.Len, msg.Data)
+
+						_, err = msg.WriteTo(conn)
+						if err != nil {
+							fmt.Println("fail to send extended:", err)
+							os.Exit(1)
+						}
+					}
+
+				case bittorrent.EXTENDED:
+					decoded, err := bittorrent.DecodeBencode(string(in.AsExtended().ExtensionDict()))
+					if err != nil {
+						panic("Failed to decode dict:" + err.Error())
+					}
+
+					switch id := in.AsExtended().ExtensionMessageId(); id {
+					case 0:
+						// handshake
+						mDict := decoded.(map[string]interface{})["m"].(map[string]interface{})
+						state.peerMetadataId = mDict["ut_metadata"].(int)
+						fmt.Printf("Peer Metadata Extension ID: %d\n", state.peerMetadataId)
+						fmt.Printf("Dict: %q\n", decoded)
+
+						// send metadata request
+						msg := bittorrent.NewExtendedMessage()
+						msg.SetExtensionMessageId(byte(state.peerMetadataId))
+						msg = msg.AddDict(map[string]interface{}{
+							"msg_type": 0,
+							"piece":    0,
+						})
+						_, err := msg.WriteTo(conn)
+						if err != nil {
+							fmt.Println("fail to send extended:", err)
+							os.Exit(1)
+						}
+
+					case byte(state.myM["ut_metadata"].(int)):
+						fmt.Printf("Received my ut_metadata id: %d\n", id)
+						fmt.Printf("LEN=%d Dict: %q\n", in.Len, decoded)
+						msgType := decoded.(map[string]interface{})["msg_type"].(int)
+						piece := decoded.(map[string]interface{})["piece"].(int)
+						totalSize := decoded.(map[string]interface{})["total_size"].(int)
+
+						lenBendict := len(bittorrent.BencodeDict(decoded.(map[string]interface{})))
+
+						fmt.Printf("%s \n", in.Data[bittorrent.OFF_EXTENDED_DICT+lenBendict:])
+						fmt.Printf("msg_type=%d, piece=%d, total_size=%d\n", msgType, piece, totalSize)
+
+						infoDict, err := bittorrent.DecodeBencode(string(in.Data[bittorrent.OFF_EXTENDED_DICT+lenBendict:]))
+						if err != nil {
+							panic("Failed to decode dict:" + err.Error())
+						}
+
+						fmt.Printf("infoDict: %q\n", infoDict)
+
+						calcInfoHash := sha1.Sum(in.Data[bittorrent.OFF_EXTENDED_DICT+lenBendict:])
+						fmt.Printf("shasum: %x\n", calcInfoHash)
+						fmt.Printf("infoHash: %x\n", infoHash)
+
+						info := infoDict.(map[string]interface{})
+						fileInfo := bittorrent.TorrentFileInfo{
+							Length:      info["length"].(int),
+							Pieces:      info["pieces"].(string),
+							Name:        info["name"].(string),
+							PieceLength: info["piece length"].(int),
+						}
+
+						fmt.Printf("Tracker URL: %s\n", magnetLink.TrackerUrl())
+						fmt.Printf("Length: %d\n", fileInfo.Length)
+						fmt.Printf("Info Hash: %x\n", calcInfoHash)
+						fmt.Printf("Piece Length: %d\n", fileInfo.PieceLength)
+						fmt.Printf("Piece Hashes:\n")
+						for i := 0; i < len(fileInfo.Pieces); i += 20 {
+							fmt.Printf("%x\n", fileInfo.Pieces[i:i+20])
+						}
+
+						torrent.Info = fileInfo
+
+						goto ReadyToDownload
+					default:
+						fmt.Printf("Unknown extension message id: %d\n", id)
+						os.Exit(1)
+					}
+
+				default:
+					panic("unhandled default case")
+				}
+
+			case err := <-handler.Errs:
+				fmt.Printf("received error: %s", err)
+				os.Exit(1)
+			}
+		}
+
+	ReadyToDownload:
+
+		totalPieces := len(torrent.Info.Pieces) / 20
+		pieceLength := torrent.Info.PieceLength
+		piece := &bittorrent.Piece{
+			Idx:  pieceIndex,
+			Len:  pieceLength,
+			Path: outputPath,
+			// FIXME: might need to copy these
+			InfoHash: infoHash,
+			PeerId:   torrent.Progress.PeerID,
+		}
+		copy(piece.Hash[:], torrent.Info.Pieces[pieceIndex*20:pieceIndex*20+20])
+
+		if torrentLen := torrent.Info.Length; torrentLen%pieceLength != 0 {
+			if pieceIndex == totalPieces-1 {
+				piece.Len = torrentLen % pieceLength
+			}
+		}
+
+		todo := make(chan *bittorrent.Piece, 1)
+		done := make(chan *bittorrent.Piece)
+		errs := make(chan error)
+		todo <- piece
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// handshake is done beforehand
+		handler.PeerState.Done_handshake = true
+		go bittorrent.PeerWorkerInitialized(ctx, peerInfo, &torrent, conn, handler, todo, done, errs)
+
+		select {
+		case err := <-errs:
+			// TODO: how to check if there are no more active PeerWorkers -> exit the program!
+			log.Println("failed PeerWorker:", err)
+			os.Exit(1)
+
+		case piece := <-done:
+			if piece.Done {
+				log.Printf("piece download done: idx=%v path=%s\n", piece.Idx, piece.Path)
+				return
+			} else {
+				// retry downloading the piece
+				log.Printf("piece download failed: idx=%v\n", piece.Idx)
+			}
+		}
+		os.Exit(1)
 
 	default:
 		fmt.Println("Unknown command: " + command)

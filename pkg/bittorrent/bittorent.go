@@ -32,14 +32,21 @@ func PeerWorker(ctx context.Context, address string, torrent *TorrentFile, todo 
 	// FIXME: what is the best way to receive errors?
 	handler := NewPeerStateHandler()
 
-	go HandleIncomingMessages(conn, handler.incoming, handler.errs)
+	go HandleIncomingMessages(conn, handler.Incoming, handler.Errs)
+
 	infoHash, err := torrent.InfoHash()
 	if err != nil {
 		errs <- fmt.Errorf("%s: %s", address, err)
 		return
 	}
 	// handshake should be done immediately
-	handler.outgoing <- *NewHandshakeMessage(torrent.Progress.PeerID, infoHash)
+	handler.Outgoing <- *NewHandshakeMessage(torrent.Progress.PeerID, infoHash)
+
+	PeerWorkerInitialized(ctx, address, torrent, conn, handler, todo, done, errs)
+}
+
+func PeerWorkerInitialized(ctx context.Context, address string, torrent *TorrentFile, conn net.Conn, handler *PeerStateHandler, todo <-chan *Piece, done chan<- *Piece, errs chan<- error) {
+	log.Printf("%s: initialized..\n", address)
 
 	// FIXME: should this be protected by mutex?
 	var piece *Piece
@@ -52,24 +59,24 @@ func PeerWorker(ctx context.Context, address string, torrent *TorrentFile, todo 
 			// FIXME: do we need to clean up here? Or is this always the worst case scenario?
 			log.Printf("%s: context was canceled", address)
 			return
-		case outMsg := <-handler.outgoing:
+		case outMsg := <-handler.Outgoing:
 			// FIXME: is there a case when didnt send all?
 			_, err := outMsg.WriteTo(conn)
 			if err != nil {
 				errs <- fmt.Errorf("%s: failed to send: %s", address, err)
 				return
 			}
-		case inMsg := <-handler.incoming:
-			// HandleMessage incoming messages
+		case inMsg := <-handler.Incoming:
+			// HandleMessage Incoming messages
 			outMsg := handler.HandleMessage(&inMsg, piece)
 			if outMsg != nil {
-				handler.outgoing <- *outMsg
+				handler.Outgoing <- *outMsg
 			}
 
 			// check if everything is downloaded
 			if piece.Buffer.Len() == piece.Len {
 
-				err = piece.SaveToFile()
+				err := piece.SaveToFile()
 				if err != nil {
 					errs <- fmt.Errorf("%s: save fail idx=%d: %s", address, piece.Idx, err)
 					return
@@ -80,7 +87,7 @@ func PeerWorker(ctx context.Context, address string, torrent *TorrentFile, todo 
 				piece = nil
 			}
 
-		case err := <-handler.errs:
+		case err := <-handler.Errs:
 			// HandleMessage errors
 			errs <- fmt.Errorf("%s: error: %s", address, err)
 			if piece != nil {
@@ -98,7 +105,7 @@ func PeerWorker(ctx context.Context, address string, torrent *TorrentFile, todo 
 					piece = p
 					log.Printf("%s: starting downloading piece: idx=%d length=%d buf=%d\n", address, piece.Idx, piece.Len, piece.Buffer.Len())
 					// fake keep_alive message so that download begins
-					handler.incoming <- *NewKeepAliveMessage()
+					handler.Incoming <- *NewKeepAliveMessage()
 				} else {
 					time.Sleep(100 * time.Millisecond)
 				}
@@ -533,18 +540,18 @@ func (piece *Piece) SaveToFile() error {
 }
 
 type PeerStateHandler struct {
-	outgoing  chan Message
-	incoming  chan Message
-	errs      chan error
-	peerState *PeerState
+	Outgoing  chan Message
+	Incoming  chan Message
+	Errs      chan error
+	PeerState *PeerState
 }
 
 func NewPeerStateHandler() *PeerStateHandler {
 	return &PeerStateHandler{
-		outgoing:  make(chan Message, 10),
-		incoming:  make(chan Message, 10),
-		errs:      make(chan error, 2),
-		peerState: NewPeerState(),
+		Outgoing:  make(chan Message, 10),
+		Incoming:  make(chan Message, 10),
+		Errs:      make(chan error, 2),
+		PeerState: NewPeerState(),
 	}
 }
 
@@ -556,11 +563,11 @@ func (handler *PeerStateHandler) HandleMessage(msg *Message, piece *Piece) *Mess
 	//log.Printf("Handling message type: %s", msg.Type())
 	switch t := msg.Type(); t {
 	case HANDSHAKE:
-		handler.peerState.done_handshake = true
+		handler.PeerState.Done_handshake = true
 	case UNCHOKE:
-		handler.peerState.peer_choking = false
+		handler.PeerState.peer_choking = false
 	case CHOKE:
-		handler.peerState.peer_choking = true
+		handler.PeerState.peer_choking = true
 	case PIECE:
 		if piece != nil {
 			// add to the buffer
@@ -574,7 +581,7 @@ func (handler *PeerStateHandler) HandleMessage(msg *Message, piece *Piece) *Mess
 	}
 
 	// TODO: should send these messages only when handshake is done
-	if !handler.peerState.done_handshake {
+	if !handler.PeerState.Done_handshake {
 		//panic("Handshake message was not received!")
 		// FIXME: is it ok to wait for handshake?
 		return nil
@@ -585,14 +592,14 @@ func (handler *PeerStateHandler) HandleMessage(msg *Message, piece *Piece) *Mess
 		return nil
 	} else {
 		// TODO: what to do if peer_choking?
-		if !handler.peerState.am_interested {
-			handler.peerState.am_interested = true
+		if !handler.PeerState.am_interested {
+			handler.PeerState.am_interested = true
 			//log.Printf("Sending interested")
 			return NewInterestedMessage()
 		}
 
 		// TODO: is this ok to wait for unchoke? or should we initiate ourselves?
-		if handler.peerState.peer_choking {
+		if handler.PeerState.peer_choking {
 			return nil
 		}
 
@@ -612,7 +619,7 @@ func (handler *PeerStateHandler) HandleMessage(msg *Message, piece *Piece) *Mess
 }
 
 type PeerState struct {
-	done_handshake  bool
+	Done_handshake  bool
 	am_choking      bool
 	am_interested   bool
 	peer_choking    bool
