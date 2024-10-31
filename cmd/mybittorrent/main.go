@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/sha1"
 	"encoding/json"
 	"fmt"
 	"github.com/codecrafters-io/bittorrent-starter-go/pkg/bittorrent"
@@ -543,6 +544,44 @@ func main() {
 
 					case byte(state.myM["ut_metadata"].(int)):
 						fmt.Printf("Received my ut_metadata id: %d\n", id)
+						fmt.Printf("LEN=%d Dict: %q\n", in.Len, decoded)
+						msgType := decoded.(map[string]interface{})["msg_type"].(int)
+						piece := decoded.(map[string]interface{})["piece"].(int)
+						totalSize := decoded.(map[string]interface{})["total_size"].(int)
+
+						lenBendict := len(bittorrent.BencodeDict(decoded.(map[string]interface{})))
+
+						fmt.Printf("%s \n", in.Data[bittorrent.OFF_EXTENDED_DICT+lenBendict:])
+						fmt.Printf("msg_type=%d, piece=%d, total_size=%d\n", msgType, piece, totalSize)
+
+						infoDict, err := bittorrent.DecodeBencode(string(in.Data[bittorrent.OFF_EXTENDED_DICT+lenBendict:]))
+						if err != nil {
+							panic("Failed to decode dict:" + err.Error())
+						}
+
+						fmt.Printf("infoDict: %q\n", infoDict)
+
+						calcInfoHash := sha1.Sum(in.Data[bittorrent.OFF_EXTENDED_DICT+lenBendict:])
+						fmt.Printf("shasum: %x\n", calcInfoHash)
+						fmt.Printf("infoHash: %x\n", infoHash)
+
+						info := infoDict.(map[string]interface{})
+						fileInfo := bittorrent.TorrentFileInfo{
+							Length:      info["length"].(int),
+							Pieces:      info["pieces"].(string),
+							Name:        info["name"].(string),
+							PieceLength: info["piece length"].(int),
+						}
+
+						fmt.Printf("Tracker URL: %s\n", magnetLink.TrackerUrl())
+						fmt.Printf("Length: %d\n", fileInfo.Length)
+						fmt.Printf("Info Hash: %x\n", calcInfoHash)
+						fmt.Printf("Piece Length: %d\n", fileInfo.PieceLength)
+						fmt.Printf("Piece Hashes:\n")
+						for i := 0; i < len(fileInfo.Pieces); i += 20 {
+							fmt.Printf("%x\n", fileInfo.Pieces[i:i+20])
+						}
+
 						return
 					default:
 						fmt.Printf("Unknown extension message id: %d\n", id)
