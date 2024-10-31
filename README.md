@@ -115,3 +115,25 @@ Peer ID: 2d524e302e302e302de33db7666c49ec504ffdcb
 $ ./your_bittorrent.sh magnet_handshake "magnet:?xt=urn:btih:c5fb9894bdaba464811b088d806bdd611ba490af&dn=magnet3.gif&tr=http%3A%2F%2Fbittorrent-test-tracker.codecrafters.io%2Fannounce"
 Peer ID: 2d524e302e302e302de33db7666c49ec504ffdcb
 ```
+
+### 15. Request metadata
+```
+$ ./your_bittorrent.sh magnet_info "magnet:?xt=urn:btih:c5fb9894bdaba464811b088d806bdd611ba490af&dn=magnet3.gif&tr=http%3A%2F%2Fbittorrent-test-tracker.codecrafters.io%2Fannounce"
+```
+
+### 16. Receive metadata
+```
+$ ./your_bittorrent.sh magnet_info "magnet:?xt=urn:btih:c5fb9894bdaba464811b088d806bdd611ba490af&dn=magnet3.gif&tr=http%3A%2F%2Fbittorrent-test-tracker.codecrafters.io%2Fannounce"
+Tracker URL: http://127.0.0.1:43985/announce
+Length: 629944
+Info Hash: c5fb9894bdaba464811b088d806bdd611ba490af
+Piece Length: 262144
+Piece Hashes:
+ca80fd83ffb34d6e1bbd26a8ef6d305827f1cd0a
+707fd7c657f6d636f0583466c3cfe134ddb2c08a
+47076d104d214c0052960ef767262649a8af0ea8
+
+Test magnet links:
+https://github.com/codecrafters-io/bittorrent-test-seeder/blob/main/torrent_files/magnet_links.txt
+```
+
