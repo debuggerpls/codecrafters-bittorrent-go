@@ -725,13 +725,13 @@ func NewKeepAliveMessage() *Message {
 	}
 }
 
-func NewExtendedMessage() *Message {
-	msg := &Message{
-		Data: []byte{0, 0, 0, 2, byte(EXTENDED), byte(EXTENSION_HANDSHAKE)},
+func NewExtendedMessage() *ExtendedMessage {
+	msg := Message{
+		Data: []byte{0, 0, 0, 2, byte(EXTENDED), 0},
 		Len:  6,
 	}
 
-	return msg
+	return &ExtendedMessage{Message: msg}
 }
 
 type PieceMessage struct {
@@ -783,14 +783,16 @@ func (m *Message) AsExtended() *ExtendedMessage {
 	return &ExtendedMessage{Message: *m}
 }
 
-type ExtensionMessageId byte
+func (m *ExtendedMessage) ExtensionMessageId() byte {
+	return m.Data[OFF_EXTENDED_MSG_ID]
+}
 
-const (
-	EXTENSION_HANDSHAKE ExtensionMessageId = iota
-)
+func (m *ExtendedMessage) SetExtensionMessageId(id byte) {
+	m.Data[OFF_EXTENDED_MSG_ID] = id
+}
 
-func (m *ExtendedMessage) ExtensionMessageId() ExtensionMessageId {
-	return ExtensionMessageId(m.Data[OFF_EXTENDED_MSG_ID])
+func (m *ExtendedMessage) IsHandshake() bool {
+	return m.ExtensionMessageId() == 0
 }
 
 func (m *ExtendedMessage) ExtensionDict() []byte {
@@ -802,6 +804,7 @@ func (m *ExtendedMessage) AddDict(d map[string]interface{}) *ExtendedMessage {
 	encodedD := BencodeDict(d)
 	m.Len = 6 + len(encodedD)
 	//fmt.Printf("Encoded Len: %d\n", m.Len)
+	// FIXME: this is where the slice is changed, thus not being a reference anymore to the original
 	m.Data = append(m.Data, encodedD...)
 
 	//decoded, err := DecodeBencode(string(m.ExtensionDict()))

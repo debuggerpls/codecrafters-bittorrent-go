@@ -410,21 +410,6 @@ func main() {
 						panic("Failed to decode dict:" + err.Error())
 					}
 
-					//fmt.Printf("Extended:\n%q\n", decoded)
-					//if state.peerExtended {
-					//	extended := bittorrent.NewExtendedMessage()
-					//	d := map[string]interface{}{
-					//		"m": map[string]interface{}{
-					//			"ut_metadata": 2,
-					//		},
-					//	}
-					//	extended.AsExtended().AddDict(d)
-					//	_, err = extended.WriteTo(conn)
-					//	if err != nil {
-					//		fmt.Println("fail to send extended:", err)
-					//		os.Exit(1)
-					//	}
-					//}
 					fmt.Printf("Peer ID: %x\n", state.peerId)
 					mDict := decoded.(map[string]interface{})["m"].(map[string]interface{})
 					fmt.Printf("Peer Metadata Extension ID: %d\n", mDict["ut_metadata"])
@@ -432,12 +417,142 @@ func main() {
 				default:
 					panic("unhandled default case")
 				}
-				//if in.Type() != bittorrent.HANDSHAKE {
-				//	fmt.Printf("expected handshake, but got %s\n", in.Type())
-				//	os.Exit(1)
-				//}
-				//fmt.Printf("Peer ID: %x\n", in.AsHandshake().PeerId())
-				//return
+
+			case err := <-errs:
+				fmt.Printf("received error: %s", err)
+				os.Exit(1)
+			}
+		}
+	case "magnet_info":
+		magnetURL := os.Args[2]
+
+		magnetLink, err := bittorrent.NewMagnetLink(magnetURL, 1234)
+		bittorrent.AssertNotNil(err, "parse error: %s\n", err)
+
+		response, err := magnetLink.GetTrackerResponse()
+		bittorrent.AssertNotNil(err, "failed to get tracker response: %s", err)
+
+		peerInfo := response.Peers[0].String()
+		conn, err := net.Dial("tcp", peerInfo)
+
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		defer conn.Close()
+
+		incoming := make(chan bittorrent.Message)
+		errs := make(chan error)
+		go bittorrent.HandleIncomingMessages(conn, incoming, errs)
+
+		infoHash, err := magnetLink.InfoHash()
+		if err != nil {
+			fmt.Println("fail infohash:", err)
+			os.Exit(1)
+		}
+
+		handshake := bittorrent.NewHandshakeMessage(magnetLink.PeerId, infoHash)
+		//fmt.Printf("Handshake: %x \n", handshake.Data)
+		handshake.AsHandshake().SetExtensions()
+		//fmt.Printf("Handshake: %x \n", handshake.Data)
+		_, err = handshake.WriteTo(conn)
+		if err != nil {
+			fmt.Println("fail to send handshake:", err)
+			os.Exit(1)
+		}
+
+		state := struct {
+			doneHandshake  bool
+			doneBitfield   bool
+			peerExtended   bool
+			peerId         [20]byte
+			peerMetadataId int
+			myM            map[string]interface{}
+		}{
+			myM: map[string]interface{}{
+				"ut_metadata": 1,
+				"ut_pex":      2,
+			},
+		}
+		_ = state
+
+		for {
+			select {
+			case in := <-incoming:
+				//fmt.Printf("Received: %s\n", in.Type())
+				switch in.Type() {
+				case bittorrent.HANDSHAKE:
+					if state.doneHandshake {
+						panic("Handshake is done already")
+					}
+					state.doneHandshake = true
+					peerId := in.AsHandshake().PeerId()
+					state.peerExtended = in.AsHandshake().HasExtensions()
+					copy(state.peerId[:], peerId[:])
+					//if state.peerExtended {
+					//	fmt.Printf("Peer has Extension bit set\n")
+					//}
+				case bittorrent.BITFIELD:
+					if state.doneBitfield {
+						panic("Bitfield already received")
+					}
+					state.doneBitfield = true
+					//send the extension handshake
+					if state.peerExtended {
+						extended := bittorrent.NewExtendedMessage()
+						//fmt.Printf("Sending l=%myM: %x \n", extended.Len, extended.Data)
+
+						msg := extended.AsExtended().AddDict(map[string]interface{}{
+							"m": state.myM})
+
+						//fmt.Printf("Sending l=%myM: %x \n", msg.Len, msg.Data)
+
+						_, err = msg.WriteTo(conn)
+						if err != nil {
+							fmt.Println("fail to send extended:", err)
+							os.Exit(1)
+						}
+					}
+
+				case bittorrent.EXTENDED:
+					decoded, err := bittorrent.DecodeBencode(string(in.AsExtended().ExtensionDict()))
+					if err != nil {
+						panic("Failed to decode dict:" + err.Error())
+					}
+
+					switch id := in.AsExtended().ExtensionMessageId(); id {
+					case 0:
+						// handshake
+						mDict := decoded.(map[string]interface{})["m"].(map[string]interface{})
+						state.peerMetadataId = mDict["ut_metadata"].(int)
+						fmt.Printf("Peer Metadata Extension ID: %d\n", state.peerMetadataId)
+						fmt.Printf("Dict: %q\n", decoded)
+
+						// send metadata request
+						msg := bittorrent.NewExtendedMessage()
+						msg.SetExtensionMessageId(byte(state.peerMetadataId))
+						msg = msg.AddDict(map[string]interface{}{
+							"msg_type": 0,
+							"piece":    0,
+						})
+						_, err := msg.WriteTo(conn)
+						if err != nil {
+							fmt.Println("fail to send extended:", err)
+							os.Exit(1)
+						}
+
+					case byte(state.myM["ut_metadata"].(int)):
+						fmt.Printf("Received my ut_metadata id: %d\n", id)
+						return
+					default:
+						fmt.Printf("Unknown extension message id: %d\n", id)
+						return
+					}
+
+				default:
+					panic("unhandled default case")
+				}
+
 			case err := <-errs:
 				fmt.Printf("received error: %s", err)
 				os.Exit(1)
